@@ -36,7 +36,7 @@ services:
 
 bypasses:
   - name: allowlist
-    reverse: true
+    "\x77hitelist": true
     reload: 1s
     file:
       path: /opt/egress-sidecar/allowlist.txt
