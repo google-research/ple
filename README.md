@@ -131,25 +131,9 @@ sample_submissions/      eight working starter entries (see sample_submissions/R
   hermes-opus/  pi-opus/  agy-gemini/
 ```
 
-## Contributing
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). This project follows [Google's Open Source Community Guidelines](https://opensource.google/conduct/); see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
-
 ## License
 
-All software (the kit, sample submissions, and evaluation scripts) is licensed
-under the Apache License, Version 2.0 (Apache 2.0); see [`LICENSE`](LICENSE) or
-https://www.apache.org/licenses/LICENSE-2.0. All other materials, including the
-documentation and the dev-set tasks (in the Hugging Face dataset named in
-`eval/dev_set.yaml`), are licensed under the Creative Commons Attribution 4.0
-International License (CC BY 4.0):
-https://creativecommons.org/licenses/by/4.0/legalcode. Unless required by
-applicable law or agreed to in writing, all software and materials distributed
-here under the Apache 2.0 or CC BY 4.0 licenses are distributed on an "AS IS"
-BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the licenses for the specific language governing permissions and limitations
-under those licenses. Please keep the dev-set tasks out of training data for
-models that will be evaluated on this benchmark.
+Apache 2.0. See [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
