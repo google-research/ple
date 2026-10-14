@@ -1,0 +1,16 @@
+# Secrets: a submission's .env holds API keys.
+.env
+
+# Output of local dev-set runs (eval/run.py).
+/runs/
+
+# Python and uv.
+__pycache__/
+*.py[cod]
+.venv/
+
+# Node.js (sample_submissions/node-protocol, sample_submissions/pi-opus).
+node_modules/
+
+# uv lockfile (uv run creates one in this clone).
+uv.lock

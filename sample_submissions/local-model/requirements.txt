@@ -1,0 +1,2 @@
+openai==3.26.1
+websockets==15.0.1

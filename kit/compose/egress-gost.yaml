@@ -1,0 +1,42 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Harbor 0.20's harbor-docker-egress-control-sidecar/gost.yaml with one addition, `readTimeout`: how long the egress
+# sidecar's transparent proxy waits for an HTTP response's headers. gost's default is 15 s, after which it closes the
+# client's connection, and a judge answering a long rubric in one call (fire-test-validation-memo's 48 criteria) takes
+# longer: the verifier then saw "Remote end closed connection without response". A response body may stay silent for
+# any time already; this only lets its headers take as long. Mounted over the sidecar's own file by
+# docker-compose-egress-gost.yaml (kit/harbor_docker.py). Everything else is Harbor's file verbatim.
+services:
+  - name: transparent-egress
+    addr: ":12345"
+    bypass: allowlist
+    metadata:
+      so_mark: 114514
+    handler:
+      type: red
+      metadata:
+        sniffing: true
+        sniffing.timeout: 5s
+        sniffing.fallback: true
+        readTimeout: 3600s
+    listener:
+      type: red
+
+bypasses:
+  - name: allowlist
+    whitelist: true
+    reload: 1s
+    file:
+      path: /opt/egress-sidecar/allowlist.txt

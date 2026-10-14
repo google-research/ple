@@ -1,0 +1,94 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The public dev set, graded like the leaderboard. Run it with `python eval/run.py <submission>`, or some of
+# it with --tasks id,id. Each task is a Harbor task, tasks/<id>/ in the Hugging Face dataset tasks_repo at
+# commit tasks_revision, which eval/run.py downloads and checks against its sha256. deliverables: the
+# container paths its grader reads (a folder ends in /), which docs/artifacts.md exports; final_message:
+# whether the grader reads the final message too.
+tasks_repo: physical-engineerings-last-exam/physical-engineerings-last-exam
+tasks_revision: 594c2762d3ccf0fbaf41fd089d216bfc3f20190d
+tasks:
+- id: jobshop-scheduler
+  title: Job-shop scheduler under a five-second budget
+  domain: Industrial engineering
+  grading: checks
+  time_limit_min: 60
+  deliverables: [/app/files/frontier__JobShop__ft/baseline/init.py]
+  final_message: false
+  sha256: f801c9dd7ec5fafe485ebdf62525fdbdb527172aa449d3edd8d7c179a43df753
+- id: refinery-pipeline
+  title: Station siting and a two-refinery pipeline network
+  domain: Civil engineering
+  grading: rubric
+  time_limit_min: 60
+  deliverables: [/app/files/]
+  final_message: true
+  sha256: 269a248be902477d50e4c2f1bce790e31a351e2c961f2bc3c82cc5c68501b6c8
+- id: data-hall-mep-routing
+  title: Clash-free MEP routing through a data hall
+  domain: Industrial engineering
+  grading: checks
+  time_limit_min: 60
+  deliverables: [/app/files/dc_model__hall_seed000_d000__mep_routing/output/solution.py]
+  final_message: false
+  sha256: a2950f857eb8f91ef7dd18217caa8def22d32d8469724af0935dfd10cc7c8f4e
+- id: pipeline-layout-cost
+  title: Cost-optimal pipeline layout with capacity-dependent pipe costs
+  domain: Civil engineering
+  grading: rubric
+  time_limit_min: 60
+  deliverables: [/app/files/]
+  final_message: true
+  sha256: 76ca73e2378153295dba041782aee9b3cea7e3c760d43a9dcdfe3ec40ef82fc2
+- id: fire-test-validation-memo
+  title: Validation memo for a fire-resistance simulation against its test
+  domain: Mechanical engineering
+  grading: rubric
+  time_limit_min: 60
+  deliverables: [/app/files/]
+  final_message: true
+  sha256: e205c0e2c4dc9c6679522521916c4884638988f6e89e59b2f20e1a5ac3c41363
+- id: data-hall-mep-routing-offset
+  title: Clash-free MEP routing through a data hall on an offset structural grid
+  domain: Industrial engineering
+  grading: checks
+  time_limit_min: 60
+  deliverables: [/app/files/dc_model__hall_seed005_d100__mep_routing/output/solution.py]
+  final_message: false
+  sha256: 79fdfc72980284e12357d1ce8dae371129bbdab38497e1b5ecc97c6d85261a95
+- id: eor-review-corrections
+  title: Issue an engineer-of-record review's corrections to two bid packages
+  domain: Industrial engineering
+  grading: checks-judge
+  time_limit_min: 120
+  deliverables: [/filesystem/dc_structural__eor_revision__blind/output/submission.zip, /filesystem/filesystem/dc_structural__eor_revision__blind/output/submission.zip]
+  final_message: false
+  sha256: befc7c45fc6401a8e0f3fc59a38d83f495d54080e140ca6427dcad153cb17ebb
+- id: foundation-strategy
+  title: Spread footings or aggregate piers for six data-campus building pads
+  domain: Civil engineering
+  grading: checks-judge
+  time_limit_min: 120
+  deliverables: [/filesystem/dc_structural__foundation_strategy__blind/output/submission.zip, /filesystem/filesystem/dc_structural__foundation_strategy__blind/output/submission.zip]
+  final_message: false
+  sha256: 1e97a97cf14714efb49cedcb0e201ecd915c69bf9ee901ee89b94ca45e3beef0
+- id: seismic-design-basis
+  title: Seismic design basis for thirteen data halls
+  domain: Structural engineering
+  grading: checks-judge
+  time_limit_min: 120
+  deliverables: [/filesystem/dc_structural__sdc_baseshear_v2__blind/output/submission.zip, /filesystem/filesystem/dc_structural__sdc_baseshear_v2__blind/output/submission.zip]
+  final_message: false
+  sha256: 7c96f9e874c6d5bfbfa26661afbdd935787860e01e3f6400f00951e2ca2e6e6a

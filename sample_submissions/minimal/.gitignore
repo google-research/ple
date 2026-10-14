@@ -1,0 +1,6 @@
+# Local files: the kit builds what git tracks plus the untracked files git does not ignore, so keep these out.
+# .env is committed on purpose (the competition reads it from your private repository): never list it here.
+.venv/
+__pycache__/
+*.pyc
+runs/
