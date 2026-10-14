@@ -36,7 +36,7 @@ services:
 
 bypasses:
   - name: allowlist
-    whitelist: true
+    reverse: true
     reload: 1s
     file:
       path: /opt/egress-sidecar/allowlist.txt
