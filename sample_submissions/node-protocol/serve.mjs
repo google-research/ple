@@ -12,25 +12,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// A harness in JavaScript that speaks the serve protocol (docs/protocol.md) itself, with no taskbridge and no SDK.
+// Minimal JavaScript harness that speaks the raw WebSocket protocol (docs/protocol.md) without taskbridge or an SDK.
 //
-// The evaluator opens one WebSocket per task and sends the task. The harness sends requests (exec, read_file,
-// write_file), each with an id of its own, and the evaluator answers each with a result that carries the same id.
-// log and usage messages get no answer. The harness ends the task with done, also when the evaluator sends cancel.
+// The evaluator opens one WebSocket per task and sends the `task` message. The harness sends `exec`, `read_file`, and
+// `write_file` requests with unique IDs and awaits matching `result` messages (`log` and `usage` are fire-and-forget).
+// The harness finishes the task by sending `done`, including when cancelled.
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { EnvHttpProxyAgent, fetch } from "undici";
 import { WebSocketServer } from "ws";
 
 const MODEL = process.env.MODEL_NAME;
-// The model's highest reasoning level: max for Claude, high for the others (Gemini refuses max). REASONING_EFFORT
-// overrides it.
-const EFFORT = process.env.REASONING_EFFORT || (MODEL.toLowerCase().includes("claude") ? "max" : "high");
+// The model's highest reasoning level: max for Claude, GLM, GPT-6 and DeepSeek-V4, high for the others (Gemini
+// refuses max). REASONING_EFFORT overrides it.
+const MAX_EFFORT_MODELS = ["claude", "glm", "gpt-6", "deepseek-v4"];
+const EFFORT = process.env.REASONING_EFFORT
+  || (MAX_EFFORT_MODELS.some((m) => MODEL.toLowerCase().includes(m)) ? "max" : "high");
 const CHAT_URL = `${process.env.MODEL_BASE_URL.replace(/\/$/, "")}/chat/completions`;
 const WRAP_UP_SEC = 240;            // ask for the summary this long before the time limit
+const WRAP_UP = "Time is almost up. Stop and reply with your summary.";
 const RESULT_CHARS = 20_000;        // a longer tool result loses its middle
+// Seconds between retries when a call fails with a rate limit, server error, dropped connection, in-stream error,
+// or truncated stream.
+const RETRY_WAITS = [5, 15, 30, 60, 120];
+// How endpoints word a 400 saying the conversation no longer fits the context window: Claude, OpenAI and vLLM,
+// Gemini, xAI.
+const CONTEXT_FULL =
+  /context.?(length|window)|prompt is too long|maximum prompt length|exceed[^.]{0,40}(token|context)/i;
+// OpenAI error `type` or `code` strings that mark an in-stream error as a bad request, which is not retried
+const BAD_REQUEST = new Set(["invalid_request_error", "context_length_exceeded", "invalid_value", "invalid_prompt"]);
+const CUT_KEEP = 1000;              // characters a tool result keeps once the context is full
 const MAX_NUDGES = 3;               // times in a row an empty or cut-off reply gets a "continue" before the run stops
 const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 32000);   // lower it for a small context window
 const MAX_FRAME = 16 << 20;         // the protocol's largest message, either way
+// Node's built-in fetch times out after 5 minutes of silence (before headers or between body chunks), which can cut
+// off a model thinking at max effort. Use a 30-minute timeout (matching the egress proxy's idle limit) and route
+// requests through HTTP_PROXY / HTTPS_PROXY.
+const IDLE_MS = Number(process.env.MODEL_IDLE_SEC || 1800) * 1000;
+const dispatcher = new EnvHttpProxyAgent({ headersTimeout: IDLE_MS, bodyTimeout: IDLE_MS });
 
 const SYSTEM = (workdir) => `You are an expert engineer working on a task in a Linux container with no internet \
 access. Your tools act inside it, and bash starts in ${workdir}. Read the task and the files it points to before you \
@@ -50,7 +69,8 @@ const TOOLS = [
 ];
 
 class Cancelled extends Error {}
-class ModelError extends Error {}   // an error the endpoint sent inside its stream; the call is not tried again
+class ModelError extends Error {}   // a bad request the endpoint named inside its stream; the call is not tried again
+class ContextFull extends Error {}  // a 400 saying the conversation no longer fits the context window
 
 function clip(text) {
   if (text.length <= RESULT_CHARS) return text;
@@ -188,28 +208,37 @@ function merged(old, value, key) {
   return Array.isArray(old) && Array.isArray(value) ? [...old, ...value] : value;
 }
 
-// A streamed reply put together as one assistant message. Streaming keeps bytes moving on a long generation (Node's
-// fetch gives up after 5 minutes without a response). The message and its tool calls keep the fields the endpoint
-// adds, so they go back with it: DeepSeek refuses a tool-call turn without its reasoning_content, Gemini a tool call
-// without the thought signature in its extra_content, and Claude behind LiteLLM keeps its reasoning in thinking_blocks.
-// `onText` gets the reply's text so far each time more of it arrives.
+// Reassembles a streamed response into a single assistant message. Preserves provider-specific fields on the
+// message and tool calls so they are echoed back on subsequent turns (DeepSeek requires `reasoning_content`,
+// Gemini requires thought signatures in `extra_content`, and Claude via LiteLLM uses `thinking_blocks`).
+// Calls `onText` with the accumulated text whenever new content arrives.
 async function readReply(body, onText) {
   const message = { role: "assistant", content: "" };
   const calls = [], byIndex = new Map(), byId = new Map();
-  let usage, finish, last, buffer = "";
+  let usage, finish, last, done = false, buffer = "";
   const decoder = new TextDecoder();
   for await (const bytes of body) {
     const lines = (buffer + decoder.decode(bytes, { stream: true })).split("\n");
     buffer = lines.pop();
     for (const line of lines) {
       if (!line.startsWith("data:")) continue;
+      done ||= line.slice(5).trim() === "[DONE]";
       let chunk;
       try {
         chunk = JSON.parse(line.slice(5));
       } catch {
         continue;                       // [DONE], with or without a space, or anything else that is not JSON
       }
-      if (chunk?.error) throw new ModelError(`model: ${JSON.stringify(chunk.error).slice(0, 300)}`);
+      if (chunk?.error) {
+        // An error sent inside the stream is tried again like a 429 or a 5xx, unless it names a bad request: by an
+        // HTTP status code, or by OpenAI's type and code strings. A full context is shortened, as after a 400.
+        const { code, type } = chunk.error, status = Number(code);
+        const text = `model: ${JSON.stringify(chunk.error).slice(0, 300)}`;
+        if (CONTEXT_FULL.test(text)) throw new ContextFull(text);
+        const bad = (status >= 400 && status < 500 && ![408, 409, 429].includes(status))
+          || BAD_REQUEST.has(type) || BAD_REQUEST.has(code);
+        throw bad ? new ModelError(text) : new Error(text);
+      }
       usage = chunk?.usage ?? usage;
       const choice = chunk?.choices?.[0];
       finish = choice?.finish_reason ?? finish;
@@ -234,6 +263,11 @@ async function readReply(body, onText) {
       }
     }
   }
+  // A stream that ends without a finish reason or [DONE] was cut off in transit, so the call is retried rather than
+  // using the partial reply as an answer or a broken tool call.
+  if (finish == null && !done && buffer.slice(5).trim() !== "[DONE]") {
+    throw new Error("model: the stream ended before its finish reason");
+  }
   message.content ||= null;
   for (const call of calls) call.id ||= `call_${randomUUID()}`;     // endpoints refuse a tool result for call ""
   if (calls.length) message.tool_calls = calls;
@@ -245,25 +279,60 @@ async function readReply(body, onText) {
   return { message, usage, finish };
 }
 
-// One model call, tried up to 5 times in all after a rate limit, a server error or a dropped connection.
-async function chat(messages, toolChoice, signal, onText) {
-  const body = JSON.stringify({ model: MODEL, messages, tools: TOOLS, tool_choice: toolChoice,
+// Claude caches a prompt prefix only when marked with cache_control. Each call marks the system prompt and the newest
+// message (2 of Claude's 4 cache breakpoints) so each turn reads the prior conversation from cache. Other providers
+// cache automatically without markers.
+const CACHE_MARK = MODEL.toLowerCase().includes("claude");
+
+// The messages a call sends: for Claude, copies of the system prompt and the newest message with cache_control (the
+// stored conversation stays as it is, so each turn marks its own newest message).
+function marked(messages) {
+  if (!CACHE_MARK) return messages;
+  const mark = { type: "ephemeral" };
+  return messages.map((m, i) => i !== 0 && i !== messages.length - 1 ? m
+    : typeof m.content === "string" && m.content ? { ...m, content: [{ type: "text", text: m.content, cache_control: mark }] }
+      : { ...m, cache_control: mark });
+}
+
+// One model call, tried again after each of RETRY_WAITS when it fails on the way. The failure goes to the run's log,
+// never into the conversation; the wait stops when `signal` does (at the wrap-up or the time limit).
+async function chat(task, messages, toolChoice, signal, onText) {
+  const body = JSON.stringify({ model: MODEL, messages: marked(messages), tools: TOOLS, tool_choice: toolChoice,
     reasoning_effort: EFFORT, max_completion_tokens: MAX_OUTPUT_TOKENS, stream: true,
     stream_options: { include_usage: true } });
-  for (let attempt = 1; ; attempt++) {
+  for (const wait of [...RETRY_WAITS, null]) {
     let error, retry;
     try {
-      const response = await fetch(CHAT_URL, { method: "POST", body, signal, headers: {
+      const response = await fetch(CHAT_URL, { method: "POST", body, signal, dispatcher, headers: {
         "Content-Type": "application/json", Authorization: `Bearer ${process.env.MODEL_API_KEY}` } });
       if (response.ok) return await readReply(response.body, onText);
-      retry = response.status === 429 || response.status >= 500;
-      error = new Error(`model: HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      const text = await response.text();
+      retry = [408, 409, 429].includes(response.status) || response.status >= 500;
+      const full = response.status === 400 && CONTEXT_FULL.test(text.slice(0, 4000));
+      error = new (full ? ContextFull : Error)(`model: HTTP ${response.status}: ${text.slice(0, 300)}`);
     } catch (caught) {
-      [error, retry] = [caught, !signal.aborted && !(caught instanceof ModelError)];
+      const final = caught instanceof ModelError || caught instanceof ContextFull;
+      [error, retry] = [caught, !signal.aborted && !final];
     }
-    if (!retry || attempt === 5) throw error;
-    await sleep(2000 * 2 ** attempt, undefined, { signal });
+    if (!retry || wait === null) throw error;
+    task.send({ type: "log", text: `${error.message.slice(0, 300)}; again in ${wait} s` });
+    await sleep(wait * 1000, undefined, { signal });
   }
+}
+
+// Truncates the older half of long tool results to CUT_KEEP characters once the context is full; repeated calls reach
+// progressively newer results. Claude's thinking blocks are kept intact because each block's signature is
+// self-contained and Claude rejects a tool loop whose newest assistant turn lost its block.
+function shorten(task, messages) {
+  const long = messages.flatMap((m, i) => (m.role === "tool" && m.content.length > 2 * CUT_KEEP ? [i] : []));
+  if (!long.length) return false;
+  const cut = long.slice(0, Math.max(1, Math.floor(long.length / 2)));
+  for (const i of cut) {
+    const start = messages[i].content.slice(0, CUT_KEEP);
+    messages[i].content = `${start}\n[... cut to save context; run the tool again if needed]`;
+  }
+  task.send({ type: "log", text: `context full: cut ${cut.length} old tool results` });
+  return true;
 }
 
 async function solve(task) {
@@ -273,15 +342,18 @@ async function solve(task) {
   while (true) {
     const left = task.secondsLeft();             // null when the task has no time limit
     const wrapUp = left !== null && left < WRAP_UP_SEC;
-    if (wrapUp) messages.push({ role: "user", content: "Time is almost up. Stop and reply with your summary." });
+    if (wrapUp && messages.at(-1).content !== WRAP_UP) messages.push({ role: "user", content: WRAP_UP });  // once
     // a call still running when the wrap-up starts is stopped
     const signal = left === null || wrapUp ? task.abort.signal
       : AbortSignal.any([task.abort.signal, AbortSignal.timeout(Math.round((left - WRAP_UP_SEC) * 1000))]);
     let reply;
     try {
       // the text streamed so far is the summary, so a reply cut off by the time limit still counts
-      reply = await chat(messages, wrapUp ? "none" : "auto", signal, (content) => { task.summary = head + content; });
+      reply = await chat(task, messages, wrapUp ? "none" : "auto", signal, (content) => {
+        task.summary = head + content;
+      });
     } catch (error) {
+      if (error instanceof ContextFull && shorten(task, messages)) continue;    // the model never reads the error
       if (task.abort.signal.aborted || !signal.aborted) throw error;
       continue;
     }

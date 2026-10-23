@@ -2,5 +2,5 @@
   "name": "node-protocol",
   "private": true,
   "type": "module",
-  "dependencies": { "ws": "8.22.0" }
+  "dependencies": { "undici": "7.30.1", "ws": "8.22.0" }
 }

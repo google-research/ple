@@ -15,10 +15,12 @@
 name: hermes-opus
 model_api: google-cloud/claude-opus-5-5
 install: >-
-  git clone --depth 1 --branch v2026.9.24 https://github.com/NousResearch/hermes-agent /opt/harness/hermes
+  git clone --depth 1 --branch v0.22.2 https://github.com/NousResearch/hermes-agent /opt/harness/hermes
+  && test "$(git -C /opt/harness/hermes rev-parse HEAD)" = d923a5eb487a17c0a68801bba9ef0f56c81040a8
   && rm -rf /opt/harness/hermes/.git /opt/harness/hermes/tests /opt/harness/hermes/website
   && cd /opt/harness/hermes
   && UV_PROJECT_ENVIRONMENT=/opt/harness/venv UV_COMPILE_BYTECODE=1
-  uv sync --locked --no-dev --extra anthropic --extra mcp --python 3.12
+  uv sync --locked --no-dev --extra anthropic --extra mcp --python 3.14
+  && /opt/harness/venv/bin/python {src}/thinking_patch.py /opt/harness/hermes
   && /opt/harness/venv/bin/python -m compileall -q -j 0 /opt/harness/hermes
 serve: /opt/harness/venv/bin/python {src}/serve.py

@@ -23,14 +23,15 @@ launching `agy` so the model sees all tool schemas immediately.
 `agy` reads `GEMINI_API_KEY` and `GOOGLE_GEMINI_BASE_URL`, which the evaluator
 sets automatically for Gemini models (`modelProvider: "gemini"`). The final text
 response from `--output-format stream-json` becomes `final_message` (or the last
-streamed text block if the task times out first). If `agy` produces no output
-for 15 minutes due to a stalled model request, `serve.py` restarts it and
-resumes the session via `--conversation`.
+streamed text block if the task times out first). If `agy` stalls with no output
+for 40 minutes, loses its connection before producing an answer, or hits a rate
+limit (waiting `60s * attempt`), `serve.py` resumes the conversation with
+`--conversation` for up to 4 total attempts.
 
 | File | Purpose |
 |---|---|
 | `submission.yaml` | Model declaration, build script, and server startup command |
-| `install.sh` | Downloads the pinned `agy` binary (with SHA-256 verification) and creates the Python venv |
+| `install.sh` | Downloads the pinned `agy` 1.3.3 binary (with SHA-512 verification) and creates the Python venv |
 | `serve.py` | Sets up an isolated `agy` home and MCP config per task, runs `agy`, and returns its output |
 | `task_mcp.py` | Stdio MCP server exposing `shell`, `read_file`, `write_file`, and `edit_file` in the task container |
 | `taskbridge.py` | Serve protocol and local HTTP relay (shared across Python samples) |
@@ -38,23 +39,33 @@ resumes the session via `--conversation`.
 ## Configuration
 
 Set `AGY_EFFORT` under `env:` in `submission.yaml` to control reasoning effort:
-`low`, `medium`, or `high` (the default, Gemini's highest).
+`low`, `medium`, or `high` (the default, Gemini's highest), for the models in
+`agy`'s own list; a custom model (`-byom`) gets `agy`'s dynamic thinking budget
+instead. Because `agy` uses
+the native Gemini API, this sample only works with Gemini models.
 
 You can switch `model_api` to `google-cloud/gemini-3.1-pro-preview`, or to
-`gemini/<model>` with your own `GEMINI_API_KEY` in `.env`. `serve.py` derives
-`agy`'s internal model identifier by stripping `-preview` and appending the
-effort level (e.g., `gemini-3.1-pro-high`; note that Gemini 3.1 Pro only
-supports `low` and `high`). You can also override the identifier directly by
-setting `AGY_MODEL` under `env:` (run `agy models` to see valid names). Gemini 4
-Argon is not in that list, so this sample cannot use
-`google-cloud/gemini-4-argon`: `agy` sends a model outside its list a thinking
-budget, which Argon refuses. Because `agy` uses the native Gemini API, this
-sample only works with Gemini models.
+`gemini/<model>` with your own `GEMINI_API_KEY` in `.env`:
+
+- **Built-in `agy` models** (Gemini 3.8, 3.7, and 3.6 Flash, and Gemini 3.1
+  Pro): `serve.py` strips `-preview` and appends the effort level (for example,
+  `gemini-3.1-pro-high`; note that Gemini 3.1 Pro only supports `low` and
+  `high`), and `agy` uses its built-in context compaction threshold. You can
+  also set `AGY_MODEL` under `env:` to pass a specific `agy models` identifier
+  directly.
+- **Other Gemini models**: `serve.py` registers `<model>-byom` in
+  `settings.json` (`customModelsConfig`) with an explicit context budget so
+  `agy` compacts the conversation before hitting the context limit (`agy`
+  triggers compaction roughly 70,000 tokens below the configured budget, which
+  `serve.py` sets to `max(W - 70000, W / 2 + 70000)` for `AGY_CONTEXT_WINDOW`
+  `W`, default `1048576`).
+- **Gemini 4 Argon**: Not supported by `agy` 1.3.3, because `agy` always sends a
+  `thinkingBudget` parameter that Gemini 4 Argon rejects with HTTP `400`.
 
 ## Notes
 
 - On startup, `agy` requests a short conversation title from a lightweight model; if the endpoint does not serve that auxiliary model, the title request fails harmlessly and the task continues.
-- `agy` attempts to contact telemetry, feature-flag, and update endpoints on
-  startup; the egress proxy blocks those requests without affecting execution,
-  and `serve.py` sets `AGY_CLI_DISABLE_AUTO_UPDATE=true`.
+- `serve.py` turns off `agy`'s telemetry in `settings.json` and its updates
+  with `AGY_CLI_DISABLE_AUTO_UPDATE=true`; the egress proxy blocks any other
+  startup request (feature flags) without affecting execution.
 - Each concurrent session uses ~300–400 MB of RAM. On tasks with large MCP catalogs, eager tool schemas add to each prompt (e.g., 264 tools add ~75k input tokens).

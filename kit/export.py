@@ -34,6 +34,7 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from typing import Any
 import uuid
@@ -308,8 +309,29 @@ def _layout(root: pathlib.Path) -> None:
     st = artifacts.lstat(path)
     if st is not None and not stat.S_ISREG(st.st_mode):
       continue
+    # written aside and swapped in: a file cut short in place (a full disk)
+    # would lack the header and be kept as the participant's from then on
     if st is None or path.read_bytes().startswith(b"# written by the kit"):
-      path.write_text(text, encoding="utf-8")
+      _replace(path, text, root / f"{STAGING}{name}-{uuid.uuid4().hex[:8]}")
+
+
+def _replace(path: pathlib.Path, text: str, tmp: pathlib.Path) -> None:
+  """Replaces `path` with UTF-8 `text` written to `tmp` first.
+
+  A write that fails (a full disk) or is interrupted leaves `path` as it was
+  and removes `tmp`.
+
+  Args:
+    path: File to replace.
+    text: Its new content.
+    tmp: Where the content is written before it replaces `path`.
+  """
+  try:
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
 
 
 def _staged(rel: str) -> bool:
@@ -474,6 +496,8 @@ def export_run(
         "ended": row.get("ended", ""),
         "reward": row.get("reward"),
         "tree": harness.get("tree"),
+        # per task, as a later partial run may keep this task beside its own
+        "dev_set": dev_digest,
         **content,
     }
     tasks[task] = entry
@@ -601,15 +625,11 @@ def write_manifest(root: pathlib.Path, data: dict[str, Any]) -> None:
     root: Path to the artifacts directory.
     data: Manifest dictionary to write.
   """
-  text = manifest_text(data)
-  tmp = root / f"{STAGING}manifest-{uuid.uuid4().hex[:8]}.json"
-  try:
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, root / artifacts.MANIFEST)
-  except BaseException:
-    # a full disk: no half-written manifest left among the artifacts
-    tmp.unlink(missing_ok=True)
-    raise
+  _replace(
+      root / artifacts.MANIFEST,
+      manifest_text(data),
+      root / f"{STAGING}manifest-{uuid.uuid4().hex[:8]}.json",
+  )
 
 
 @contextlib.contextmanager
@@ -770,8 +790,10 @@ def _into_entry(
     else:
       capture.remove(root / name)
   _layout(root)
+  # a kept task keeps the dev set it was made with, whatever the new run's; a
+  # manifest without per-task dev sets gives each task its top-level one
   kept = {
-      t: e
+      t: {"dev_set": old.get("dev_set"), **e} if isinstance(e, dict) else e
       for t, e in old["tasks"].items()
       if t not in todo and artifacts.is_folder(root / t)
   }
@@ -948,13 +970,13 @@ def save_record(
     harness: Provenance metadata dictionary for the harness.
     dev_digest: Digest identifying the dev set.
   """
-  tmp = run_dir / f".{RECORD}.tmp"
-  tmp.write_text(
+  _replace(
+      run_dir / RECORD,
       json.dumps({"rows": rows, "harness": harness, "dev_set": dev_digest})
       + "\n",
-      encoding="utf-8",
+      # a unique name, as eval/run.py's checkpoint thread may save concurrently
+      run_dir / f".{RECORD}.{os.getpid()}.{threading.get_ident()}.tmp",
   )
-  os.replace(tmp, run_dir / RECORD)
 
 
 def import_run(entry: pathlib.Path, run: pathlib.Path) -> list[str]:

@@ -31,14 +31,14 @@ relay (resolving relative paths and running commands in the task's `workdir`).
 
 ## Customizing
 
-In `harness.py`, you can edit `NOTE` to append instructions to Pi's system
+In `harness.py`, you can edit `NOTE` (and `TIME_NOTE`) to append instructions to Pi's system
 prompt, or adjust `THINKING` (`off` through `max`, default `max`, the highest) to change
 the reasoning budget. To customize tools, modify `task-tools.ts` or pass
 additional extensions via `-e` in `harness.py`. To upgrade Pi itself, update
 the version in `package.json`, run `npm install --package-lock-only` to refresh
 `package-lock.json`, and commit both files.
 
-To change the model, set `model_api` in `submission.yaml` to any model in [`docs/models.md`](../../docs/models.md). Claude models (`google-cloud/claude-*`, `anthropic/*`) use Pi's native `anthropic` provider, and Gemini models (`google-cloud/gemini-*`, `gemini/*`) use Pi's native `google` provider, automatically inheriting context limits, thinking support, and vision support from Pi's built-in catalog. All other models use the OpenAI-compatible `MODEL_BASE_URL` with the fallback limits in `UNKNOWN_MODEL` inside `harness.py` (128k context, 16k max output tokens, text-only; update `UNKNOWN_MODEL` to match your model's specs). Pi 1.1.0's catalog has no Gemini 4 Argon, so `google-cloud/gemini-4-argon` also gets `UNKNOWN_MODEL` (set its limits to a 1,048,576-token context and 65,536 output tokens) and thinks at the server's default level, `high`. Leave `reasoning` out of `UNKNOWN_MODEL` for it: with `reasoning: true`, Pi sends a thinking budget, which Argon refuses with `400`.
+To change the model, set `model_api` in `submission.yaml` to any model in [`docs/models.md`](../../docs/models.md). Claude models (`google-cloud/claude-*`, `anthropic/*`) use Pi's native `anthropic` provider, and Gemini models (`google-cloud/gemini-*`, `gemini/*`) use Pi's native `google` provider, inheriting context limits, thinking support, and vision support from Pi's built-in catalog. Any model not in Pi 1.1.0's catalog—including OpenAI-compatible models and `google-cloud/gemini-4-argon`—falls back to `UNKNOWN_MODEL` in `harness.py` (128k context, 16k max output tokens, text-only; update those limits to match your model, such as 1,048,576 context and 65,536 max output tokens for Gemini 4 Argon, and leave `reasoning` unset for Argon because Pi's `reasoning: true` sends a token budget that Argon rejects with `400`).
 
 ## Notes
 
@@ -46,5 +46,7 @@ To change the model, set `model_api` in `submission.yaml` to any model in [`docs
   serve container's filesystem rather than the task container (`bash` handles
   those inside the task container).
 - Individual `bash` calls can run for up to 600 seconds (the protocol maximum).
-- `harness.py` stops Pi 90 seconds before the task deadline so its last answer is sent cleanly as `final_message`.
+- `harness.py` appends the task's remaining minutes to Pi's system prompt, stops Pi 90 seconds before the task deadline, and sends Pi's latest response as `final_message`.
+- Pi is configured (`SETTINGS` in `harness.py`) to retry failed model requests up to 8 times over ~4 minutes, allow up to an hour for silent reasoning streams, and keep Claude's prompt cache warm during long commands.
+- Task MCP servers are passed to Pi via `mcp.json`.
 - `npm ci` installs exact versions from `package-lock.json`, ensuring reproducible builds on the evaluation server.

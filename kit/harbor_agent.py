@@ -40,6 +40,21 @@ from kit import relay
 from kit import stack
 
 
+def _toml() -> Any:
+  """Returns the standard `tomllib` module, falling back to `tomli` on 3.10.
+
+  Returns:
+    The `tomllib` module, or `tomli`, which has the same interface.
+  """
+  # pylint: disable=g-import-not-at-top
+  try:
+    import tomllib
+  except ModuleNotFoundError:
+    import tomli as tomllib
+  # pylint: enable=g-import-not-at-top
+  return tomllib
+
+
 def task_agent_timeout(text: str) -> float | None:
   """Parses `[agent].timeout_sec` from `task.toml` content.
 
@@ -49,12 +64,39 @@ def task_agent_timeout(text: str) -> float | None:
   Returns:
     The configured timeout in seconds as a float, or None if unset.
   """
-  # tomllib needs Python 3.11: Harbor's Python has it, but the kit's tests also
-  # import this module on 3.10
-  import tomllib  # pylint: disable=g-import-not-at-top
-
-  value = (tomllib.loads(text).get("agent") or {}).get("timeout_sec")
+  value = (_toml().loads(text).get("agent") or {}).get("timeout_sec")
   return None if value is None else float(value)
+
+
+def task_collect_hooks(text: str) -> list[dict[str, Any]]:
+  """Parses the `[verifier]` collect hooks for the task's own container.
+
+  Harbor runs these hooks after the agent phase, before it copies the
+  artifacts out (for example, a world's snapshot of its apps' databases), so
+  the capture runs them first too: what they write is part of the
+  deliverables. A hook for another compose service is left to Harbor, since
+  the capture copies the task container only.
+
+  Args:
+    text: Raw TOML content of `task.toml`.
+
+  Returns:
+    The hooks of the `main` service, in order, each as a dictionary with
+    `command`, `timeout_sec` (Harbor's default of 60 seconds when unset) and
+    `user` (None when unset).
+  """
+  hooks = (_toml().loads(text).get("verifier") or {}).get("collect") or []
+  return [
+      {
+          "command": str(h["command"]),
+          "timeout_sec": float(h.get("timeout_sec", 60.0)),
+          "user": h.get("user"),
+      }
+      for h in hooks
+      if isinstance(h, dict)
+      and h.get("command")
+      and h.get("service", "main") == "main"
+  ]
 
 
 def agent_timeout(
@@ -464,18 +506,24 @@ class ServeAgent(BaseAgent):
   async def _capture(self, environment) -> None:
     """Stops leftover processes and copies modified deliverables from the task.
 
-    Runs within `capture.CAPTURE_SEC`. Any cancellation arriving during capture
-    is held until the copy finishes so the verifier never runs while files are
-    still being copied out.
+    Once what the harness left running has stopped, runs the task's collect
+    hooks as Harbor runs them before it copies the artifacts
+    (`task_collect_hooks`), then copies the deliverables out. Runs within
+    `capture.CAPTURE_SEC` plus the hooks' own time limits. Any cancellation
+    arriving during capture is held until the copy finishes so the verifier
+    never runs while files are still being copied out.
 
     Args:
       environment: The Harbor task environment.
     """
     dest = pathlib.Path(environment.trial_paths.trial_dir) / capture.FOLDER
     capture.start(dest)
+    hooks = self._collect_hooks(environment)
 
     async def copy() -> None:
       await HarborExecutor(environment).stop_all()
+      for hook in hooks:
+        await self._run_hook(environment, hook)
       await capture.capture(
           environment,
           self.captured,
@@ -485,7 +533,8 @@ class ServeAgent(BaseAgent):
           self.capture_note,
       )
 
-    job = asyncio.ensure_future(asyncio.wait_for(copy(), capture.CAPTURE_SEC))
+    budget = capture.CAPTURE_SEC + sum(h["timeout_sec"] for h in hooks)
+    job = asyncio.ensure_future(asyncio.wait_for(copy(), budget))
     try:
       await asyncio.shield(job)
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -496,6 +545,56 @@ class ServeAgent(BaseAgent):
       self.logger.warning(
           f"serve: the deliverables were not copied out ({type(exc).__name__}:"
           f" {exc})"
+      )
+
+  def _collect_hooks(self, environment) -> list[dict[str, Any]]:
+    """Reads the task's collect hooks (`task_collect_hooks`).
+
+    Args:
+      environment: The Harbor task environment.
+
+    Returns:
+      The hooks, or an empty list when the task's `task.toml` cannot be read.
+    """
+    _, task_dir = self._trial(environment)
+    try:
+      return (
+          task_collect_hooks((task_dir / "task.toml").read_text())
+          if task_dir
+          else []
+      )
+    # the capture goes on without them; Harbor still runs them
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      self.logger.warning(
+          "serve: the task's collect hooks could not be read"
+          f" ({type(exc).__name__}: {exc})"
+      )
+      return []
+
+  async def _run_hook(self, environment, hook: dict[str, Any]) -> None:
+    """Runs one collect hook in the task container, best effort as Harbor does.
+
+    A failure is logged, never raised.
+
+    Args:
+      environment: The Harbor task environment.
+      hook: One hook from `task_collect_hooks`.
+    """
+    command = hook["command"][:200]
+    try:
+      result = await environment.exec(
+          command=hook["command"],
+          timeout_sec=int(hook["timeout_sec"]),
+          user=hook["user"],
+      )
+      if result.return_code != 0:
+        self.logger.warning(
+            f"serve: a collect hook exited {result.return_code}: {command}"
+        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      self.logger.warning(
+          f"serve: a collect hook failed ({type(exc).__name__}: {exc}):"
+          f" {command}"
       )
 
   def _trial(self, environment) -> tuple[dict[str, Any], pathlib.Path | None]:

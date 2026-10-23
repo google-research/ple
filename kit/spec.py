@@ -350,6 +350,23 @@ def fill(text: str, port: int | None = None) -> str:
   return PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), m.group(0)), text)
 
 
+def _name_shown(name: str) -> str:
+  """Returns how a `.env` problem names a line's invalid variable name.
+
+  A name that is only spelt in the wrong case (`openai_api_key`) is repeated;
+  any other could be a key pasted where the name goes, and is not.
+
+  Args:
+    name: The text before `=` on the line.
+
+  Returns:
+    The quoted name, or `the name before =`.
+  """
+  if ENV_KEY_RE.fullmatch(name.upper()) and not any(c.isdigit() for c in name):
+    return repr(name)
+  return "the name before ="
+
+
 def read_env(text: str) -> dict[str, str]:
   """Parses `NAME=value` lines from `.env` content without variable expansion.
 
@@ -388,7 +405,7 @@ def read_env(text: str) -> dict[str, str]:
       continue
     elif not ENV_KEY_RE.fullmatch(b.key):
       problems.append(
-          f"{where}: {models.brief(b.key)} is not an environment variable name"
+          f"{where}: {_name_shown(b.key)} is not an environment variable name"
           " (A-Z, 0-9 and _)"
       )
     elif b.key in first:

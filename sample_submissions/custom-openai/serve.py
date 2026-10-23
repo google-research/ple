@@ -18,11 +18,12 @@ Connects to `MODEL_BASE_URL` using `MODEL_API_KEY` and `MODEL_NAME`. The model
 works in the task container through four built-in tools (`bash`, `read_file`,
 `write_file`, `edit_file`) plus the task's own MCP tools, and finishes when it
 provides a complete answer without calling a tool. That answer becomes the final
-message.
+message. Calls go to the Chat Completions API, or to the Responses API for
+OpenAI's GPT-6 models (`RESPONSES_MODELS`).
 
 Optional environment variables: `MAX_OUTPUT_TOKENS` (default `32000`),
 `COMPACT_AT_TOKENS` (default `150000`), and `REASONING_EFFORT` (default `max`
-for Claude, `high` for other models).
+for Claude, GLM, GPT-6 and DeepSeek-V4, `high` for other models).
 """
 
 from __future__ import annotations
@@ -33,17 +34,30 @@ import os
 import posixpath
 import re
 import sys
+import types
 from typing import Any
 
 import openai
 import taskbridge
 
 MODEL = os.environ.get("MODEL_NAME", "")
-# The model's highest reasoning level: max for Claude, high for the others
-# (Gemini refuses max). REASONING_EFFORT overrides it.
+# The model's highest reasoning level: max for Claude, GLM, GPT-6 and
+# DeepSeek-V4, high for the others (Gemini refuses max). REASONING_EFFORT
+# overrides it.
+MAX_EFFORT_MODELS = ("claude", "glm", "gpt-6", "deepseek-v4")
 EFFORT = os.environ.get("REASONING_EFFORT") or (
-    "max" if "claude" in MODEL.lower() else "high"
+    "max" if any(m in MODEL.lower() for m in MAX_EFFORT_MODELS) else "high"
 )
+# OpenAI's GPT-6 models only support function tools combined with
+# reasoning_effort on the Responses API. Other models also switch to
+# /v1/responses if /v1/chat/completions returns a 400 directing them there.
+RESPONSES_MODELS = ("gpt-6",)
+RESPONSES_ONLY = re.compile(
+    r"/v1/responses|not supported.{0,80} in /v1/chat/completions"
+)
+# Claude reuses a cached prompt prefix only where a request marks one
+# (marked()); other models cache on their own.
+CACHE_MARK = "claude" in MODEL.lower()
 COMPACT_AT_TOKENS = int(os.environ.get("COMPACT_AT_TOKENS", "150000"))
 TOOL_RESULT_CHARS = 30_000
 # MCP tools are offered as functions up to this many characters of JSON in all
@@ -53,27 +67,28 @@ MAX_TOOLS = 128
 KEEP_RECENT_RESULTS = 12
 FINISH_MARGIN_SEC = 180
 RETRY_WAITS = (5, 15, 30, 60, 120)
-# How endpoints word an error saying the conversation no longer fits. OpenAI's
-# error for too many tools ("'tools':
-# array too long") does not match.
+# How endpoints word an error saying the conversation no longer fits (xAI's:
+# "maximum prompt length is N but the request contains M tokens"). OpenAI's
+# error for too many tools ("'tools': array too long") does not match.
 CONTEXT_FULL = re.compile(
     r"context.?(length|window|size|limit)|maximum context|too many"
-    r" tokens|prompt is too long"
+    r" tokens|prompt is too long|maximum prompt length"
     r"|(input|prompt|request|messages?)\b[^.]{0,40}(too long|exceed)"
     r"|exceed[^.]{0,40}(token|context)",
     re.I,
 )
-# The context window and the prompt's share of it, as vLLM, OpenAI and Anthropic
-# word them in such an error.
+# The context window and the prompt's share of it, as vLLM, OpenAI, Anthropic,
+# Gemini and xAI word them in such an error.
 WINDOW_RE = re.compile(
     r"maximum context length (?:is |of )?(\d+)"
     r"|context (?:window|length|size)(?: limit)?(?: is| of)? (\d+)"
-    r"|tokens? > (\d+) maximum|maximum number of tokens allowed \((\d+)\)",
+    r"|tokens? > (\d+) maximum|maximum number of tokens allowed \((\d+)\)"
+    r"|maximum prompt length is (\d+)",
     re.I,
 )
 PROMPT_RE = re.compile(
     r"(\d+) input tokens|(\d+) in the messages|prompt is too long: (\d+)"
-    r"|input token count \((\d+)\)",
+    r"|input token count \((\d+)\)|request contains (\d+) tokens",
     re.I,
 )
 MIN_OUTPUT = 1024  # the fewest output tokens to ask for
@@ -439,6 +454,115 @@ def drop_thinking(
   return message
 
 
+def marked(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """Returns the messages a Chat Completions call sends.
+
+  For Claude, this is a copy whose system prompt and newest message carry
+  `cache_control` (2 of Claude's 4 cache breakpoints), so every turn reads the
+  conversation so far from the cache instead of paying for all of it again.
+  The stored conversation stays as it is.
+
+  Args:
+    messages: The conversation so far.
+
+  Returns:
+    `messages` itself for other models, or the marked copy for Claude.
+  """
+  if not CACHE_MARK:
+    return messages
+  out = list(messages)
+  for i in {0, len(out) - 1}:
+    m, content = out[i], out[i].get("content")
+    if isinstance(content, str) and content:
+      out[i] = {
+          **m,
+          "content": [{
+              "type": "text",
+              "text": content,
+              "cache_control": {"type": "ephemeral"},
+          }],
+      }
+    else:
+      out[i] = {**m, "cache_control": {"type": "ephemeral"}}
+  return out
+
+
+def response_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """Converts Chat Completions messages into Responses API input items.
+
+  Assistant turns produced by the Responses API are replayed using their saved
+  output items (including encrypted reasoning). Each function call takes its id
+  and name from the turn's stored tool call, and its arguments as
+  `parse_arguments` rewrote them.
+
+  Args:
+    messages: Conversation messages in Chat Completions format.
+
+  Returns:
+    The `input` list for a Responses API call.
+  """
+  items = []
+  for m in messages:
+    if m["role"] == "tool":
+      items.append({
+          "type": "function_call_output",
+          "call_id": m["tool_call_id"],
+          "output": m["content"],
+      })
+    elif m["role"] != "assistant":
+      items.append({"role": m["role"], "content": m["content"]})
+    elif "output_items" in m:
+      calls = iter(m.get("tool_calls") or [])
+      for item in m["output_items"]:
+        call = None
+        if item.get("type") == "function_call":
+          call = next(calls, None)
+        if call:
+          item = {
+              **item,
+              "call_id": call["id"],
+              "name": call["function"]["name"],
+              "arguments": call["function"]["arguments"],
+          }
+        items.append(item)
+    else:
+      if m.get("content"):
+        items.append({"role": "assistant", "content": m["content"]})
+      items += [
+          {
+              "type": "function_call",
+              "call_id": c["id"],
+              "name": c["function"]["name"],
+              "arguments": c["function"]["arguments"],
+          }
+          for c in m.get("tool_calls") or []
+      ]
+  return items
+
+
+def chat_usage(usage: Any) -> Any:
+  """Returns Responses API `usage` in the shape `record` and `report` read.
+
+  Args:
+    usage: A Responses API usage object, or None.
+
+  Returns:
+    An object with `prompt_tokens`, `completion_tokens` and
+    `prompt_tokens_details.cached_tokens`, as Chat Completions reports them, or
+    None.
+  """
+  if usage is None:
+    return None
+  details = getattr(usage, "input_tokens_details", None)
+  return types.SimpleNamespace(
+      prompt_tokens=usage.input_tokens or 0,
+      completion_tokens=usage.output_tokens or 0,
+      prompt_tokens_details=types.SimpleNamespace(
+          cached_tokens=getattr(details, "cached_tokens", 0) or 0
+      ),
+  )
+
+
 class MCPServer(taskbridge.MCPClient):
   """Client wrapper for a single task MCP server and its discovered tools."""
 
@@ -624,6 +748,55 @@ class CutOff(asyncio.TimeoutError):  # pylint: disable=g-bad-exception-name
   """Raised when a streamed reply is cut off by its per-call deadline."""
 
 
+class StreamBadRequest(openai.OpenAIError):  # pylint: disable=g-bad-exception-name
+  """Raised when an SSE stream reports a non-retryable bad request error.
+
+  OpenAI streams report errors via `type` and `code` strings (such as
+  `invalid_request_error` or `context_length_exceeded`) instead of an HTTP 400
+  status. Treating them as 400-equivalent allows `remedy()` to adjust the
+  request rather than retrying it unchanged.
+  """
+
+
+# `type` or `code` values of an in-stream error that mark a bad request
+BAD_REQUEST = frozenset({
+    "invalid_request_error",
+    "context_length_exceeded",
+    "invalid_value",
+    "invalid_prompt",
+})
+
+
+def stream_error(error: Any) -> openai.OpenAIError:
+  """Classifies an in-stream error object as a bad request or a truncated stream.
+
+  Args:
+    error: Error object or dict reported inside an SSE stream.
+
+  Returns:
+    `StreamBadRequest` if the error type, code, or message indicates an invalid
+    request or context overflow; otherwise `StreamCut` so the call is retried.
+  """
+  def field(name: str) -> Any:
+    if isinstance(error, dict):
+      return error.get(name)
+    return getattr(error, name, None)
+
+  message = str(field("message") or "")
+  named = {field("type"), field("code")} & BAD_REQUEST
+  if named or CONTEXT_FULL.search(message):
+    return StreamBadRequest(message)
+  return StreamCut(f"the stream reported an error: {message}")
+
+
+class StreamCut(openai.OpenAIError):  # pylint: disable=g-bad-exception-name
+  """Raised when an SSE stream ends before reporting a finish reason.
+
+  Indicates a dropped connection, proxy timeout, or transient in-stream error.
+  The partial response is discarded and the call is retried.
+  """
+
+
 class Agent:
   """Manages the conversation, tool execution, and context compaction loop."""
 
@@ -643,6 +816,8 @@ class Agent:
     self.token_limit = "max_completion_tokens"
     # empty once an endpoint refuses it
     self.effort = {"reasoning_effort": EFFORT}
+    # whether calls go to the Responses API rather than Chat Completions
+    self.responses = MODEL.lower().startswith(RESPONSES_MODELS)
     self.finish_margin = FINISH_MARGIN_SEC
 
   async def run(self) -> str:
@@ -900,49 +1075,30 @@ class Agent:
       CutOff: If the response is still streaming when `reserve` is reached.
       openai.APIError: If a non-retryable API error occurs or retries are
         exhausted.
+      StreamCut: If every stream, retries included, ends without a finish
+        reason.
     """
     reserve = self.finish_margin if reserve is None else reserve
     waits = iter(RETRY_WAITS)
     while True:
       try:
         reply = await self.stream(self.messages, tool_choice, reserve, head)
+        if reply.finish is None:
+          raise StreamCut("the stream ended without a finish reason")
         await self.record(reply)
         return reply
       except openai.APIStatusError as exc:
-        error = str(exc)
-        if exc.status_code == 400 and CONTEXT_FULL.search(error):
-          # The conversation does not fit. Try in this order:
-          # 1. fewer output tokens, when the error shows that alone makes room
-          #    (restored as the prompt shrinks);
-          # 2. compact() what the model has already read;
-          # 3. fewer output tokens anyway, when the error did not give the
-          #    prompt's size;
-          # 4. cut_unread(), the tool results the model has not read yet.
-          sent, measured = self.max_output, self.learn_context(error)
-          if (
-              measured
-              and self.room() >= MIN_OUTPUT
-              and self.output_limit() < sent
-          ):
-            continue
-          if (
-              await self.compact(force=True)
-              or (not measured and self.output_limit() < sent)
-              or self.cut_unread()
-          ):
-            continue
-          raise
-        if exc.status_code == 400 and (
-            self.use_max_tokens(error)
-            or self.drop_effort(error)
-            or self.shrink_output(error)
-        ):
+        if exc.status_code == 400 and await self.remedy(str(exc)):
           continue
         if not (exc.status_code in (408, 409, 429) or exc.status_code >= 500):
           raise
         failure = exc
-      # a connection error, a timeout, an error inside the stream
-      except openai.APIError as exc:
+      except StreamBadRequest as exc:
+        if await self.remedy(str(exc)):
+          continue
+        raise
+      # a connection error, a timeout, or a stream that errored or ended early
+      except (openai.APIError, StreamCut) as exc:
         failure = exc
       wait = next(waits, None)
       if wait is None:
@@ -958,6 +1114,56 @@ class Agent:
           f"model call failed ({str(failure)[:300]}); again in {wait}s"
       )
       await asyncio.sleep(wait)
+
+  async def remedy(self, error: str) -> bool:
+    """Adjusts request parameters for the next call after a bad request.
+
+    Args:
+      error: The error message returned by a 400 response or stream failure.
+
+    Returns:
+      True if the request parameters were adjusted and the call can be retried.
+    """
+    if CONTEXT_FULL.search(error):
+      # The conversation does not fit. Try in this order:
+      # 1. fewer output tokens, when the error shows that alone makes room
+      #    (restored as the prompt shrinks);
+      # 2. compact() what the model has already read;
+      # 3. fewer output tokens anyway, when the error did not give the
+      #    prompt's size;
+      # 4. cut_unread(), the tool results the model has not read yet.
+      sent, measured = self.max_output, self.learn_context(error)
+      if (
+          measured
+          and self.room() >= MIN_OUTPUT
+          and self.output_limit() < sent
+      ):
+        return True
+      return bool(
+          await self.compact(force=True)
+          or (not measured and self.output_limit() < sent)
+          or self.cut_unread()
+      )
+    return (
+        self.use_responses(error)
+        or self.use_max_tokens(error)
+        or self.drop_effort(error)
+        or self.shrink_output(error)
+    )
+
+  def use_responses(self, error: str) -> bool:
+    """Switches to the Responses API if a Chat Completions 400 points there.
+
+    Args:
+      error: Error message string from a 400 `APIStatusError`.
+
+    Returns:
+      `True` if calls now go to the Responses API.
+    """
+    if self.responses or not RESPONSES_ONLY.search(error):
+      return False
+    self.responses = True
+    return True
 
   def use_max_tokens(self, error: str) -> bool:
     """Switches to `max_tokens` if `error` rejects `max_completion_tokens`.
@@ -981,7 +1187,7 @@ class Agent:
     """Stops sending `reasoning_effort` once an endpoint refuses it.
 
     A model without reasoning, or a server that does not know the parameter,
-    answers `400` naming it.
+    answers `400` naming it (`reasoning.effort` on the Responses API).
 
     Args:
       error: Error message string from a 400 `APIStatusError`.
@@ -989,7 +1195,7 @@ class Agent:
     Returns:
       `True` if `reasoning_effort` was being sent and is now dropped.
     """
-    if not self.effort or "reasoning_effort" not in error:
+    if not self.effort or not re.search(r"reasoning[._]effort", error):
       return False
     self.effort = {}
     return True
@@ -1089,10 +1295,19 @@ class Agent:
   def estimate_prompt_tokens(self) -> int:
     """Estimates prompt token count at four JSON characters per token.
 
+    Skips `output_items`, which repeat a Responses API turn's text and calls
+    plus encrypted reasoning whose length does not track its token count.
+
     Returns:
       Estimated number of tokens in `self.messages`.
     """
-    return sum(len(json.dumps(m)) for m in self.messages) // 4
+    return (
+        sum(
+            len(json.dumps({k: v for k, v in m.items() if k != "output_items"}))
+            for m in self.messages
+        )
+        // 4
+    )
 
   async def stream(
       self,
@@ -1124,9 +1339,12 @@ class Agent:
     reply = Reply()
 
     async def read():
+      if self.responses:
+        await self.respond(reply, messages, tool_choice)
+        return
       stream = await client.chat.completions.create(
           model=MODEL,
-          messages=messages,
+          messages=marked(messages),
           tools=self.tools,
           tool_choice=tool_choice,
           stream=True,
@@ -1160,11 +1378,93 @@ class Agent:
       if isinstance(exc, asyncio.CancelledError):
         raise
       raise CutOff() from None
+    except openai.APIError as exc:
+      # the SDK raises an error sent inside a chat stream as an APIError
+      said = {
+          "message": getattr(exc, "message", None) or str(exc),
+          "type": getattr(exc, "type", None),
+          "code": getattr(exc, "code", None),
+      }
+      if isinstance(exc, openai.APIStatusError) or isinstance(
+          stream_error(said), StreamCut
+      ):
+        raise
+      raise StreamBadRequest(said["message"]) from exc
     for n, call in reply.calls.items():
       call["id"] = call["id"] or f"call_{n}_{len(self.messages)}"
       # some open models leak chat-template tokens into it
       call["name"] = call["name"].split("<|")[0].strip()
     return reply
+
+  async def respond(
+      self, reply: Reply, messages: list[dict[str, Any]], tool_choice: str
+  ) -> None:
+    """Streams a single Responses API call into `reply`.
+
+    Keeps the conversation in Chat Completions format and converts it on each
+    call via `response_input`. Because `store=False`, each response's output
+    items (including encrypted reasoning) are saved and echoed back on
+    subsequent turns. If the stream ends before `response.completed` or
+    `response.incomplete`, `reply.finish` remains `None` so the call is retried.
+
+    Args:
+      reply: The `Reply` to populate as events arrive.
+      messages: Conversation message list to send.
+      tool_choice: `"auto"` or `"none"`.
+
+    Raises:
+      StreamCut: If the stream reports a transient error.
+      StreamBadRequest: If the stream reports a non-retryable bad request.
+    """
+    effort = self.effort.get("reasoning_effort")
+    stream = await client.responses.create(
+        model=MODEL,
+        input=response_input(messages),
+        tools=[
+            {"type": "function", **t["function"], "strict": False}
+            for t in self.tools
+        ],
+        tool_choice=tool_choice,
+        stream=True,
+        store=False,
+        include=["reasoning.encrypted_content"],
+        max_output_tokens=self.max_output,
+        **({"reasoning": {"effort": effort}} if effort else {}),
+    )
+    async for event in stream:
+      kind = getattr(event, "type", "")
+      if kind == "response.output_text.delta":
+        reply.text += event.delta or ""
+      elif kind in ("error", "response.failed"):
+        raise stream_error(
+            getattr(getattr(event, "response", None), "error", None) or event
+        )
+      elif kind in ("response.completed", "response.incomplete"):
+        done = event.response
+        items = [i.model_dump(exclude_none=True) for i in done.output or []]
+        reply.extra = {"output_items": items}
+        reply.text = "".join(
+            part.get("text", "")
+            for item in items
+            if item.get("type") == "message"
+            for part in item.get("content") or []
+            if part.get("type") == "output_text"
+        )
+        for item in items:
+          if item.get("type") == "function_call":
+            reply.calls[len(reply.calls)] = {
+                "id": item.get("call_id") or "",
+                "name": item.get("name") or "",
+                "arguments": item.get("arguments") or "",
+                "extra": {},
+                "function_extra": {},
+            }
+        reply.usage = chat_usage(done.usage)
+        reason = getattr(done.incomplete_details, "reason", None)
+        if kind == "response.completed":
+          reply.finish = "tool_calls" if reply.calls else "stop"
+        else:
+          reply.finish = reason if reason == "content_filter" else "length"
 
   async def record(self, reply: Reply) -> None:
     """Updates `prompt_tokens` from `reply` and reports token usage.
@@ -1262,12 +1562,16 @@ class Agent:
 
     Args:
       command: Shell command string to run.
-      timeout_sec: Timeout in seconds.
+      timeout_sec: Timeout in seconds, cut to end before the time kept for the
+        final summary.
 
     Returns:
       Formatted exit code and command output string.
     """
     cap = int(self.session.limits.get("exec_timeout_sec") or 600)
+    left = self.session.time_left()
+    if left is not None:
+      cap = min(cap, max(1, int(left - self.finish_margin)))
     result = await self.session.exec(
         command, taskbridge.positive_int(timeout_sec, 120, cap)
     )
@@ -1359,8 +1663,9 @@ class Agent:
 
     First truncates older read tool outputs (keeping `KEEP_RECENT_RESULTS`
     unless `force` is `True`). If that is insufficient, summarizes older turns
-    via a model call. Drops thinking blocks after any modified message index so
-    Claude does not reject subsequent requests.
+    via a model call. Claude's thinking blocks stay on the kept turns: a block's
+    signature does not depend on the turns before it, and Claude refuses a tool
+    loop whose newest turn lost its block.
 
     Args:
       force: Whether compaction was triggered by a context-full error.
@@ -1389,7 +1694,6 @@ class Agent:
         )
         cuts.append(n)
     if cuts:
-      self.drop_thinking_after(cuts[0])
       await self.session.log(f"context: cut {len(cuts)} old tool results")
       self.prompt_tokens = self.estimate_prompt_tokens()
       if (
@@ -1411,12 +1715,17 @@ class Agent:
           "none",
           self.finish_margin,
       )
-    except (openai.APIError, asyncio.TimeoutError) as exc:
+    except (openai.APIError, StreamCut, asyncio.TimeoutError) as exc:
       await self.session.log(
           f"context: notes failed ({str(exc)[:200] or 'out of time'})"
       )
       return bool(cuts)
     await self.report(notes)
+    if notes.finish is None:
+      await self.session.log(
+          "context: the notes were cut short, so the turns are kept"
+      )
+      return bool(cuts)
     text = visible(notes.text)
     if not text:
       await self.session.log(
@@ -1437,20 +1746,9 @@ class Agent:
         }]
         + self.messages[cut:]
     )
-    self.drop_thinking_after(2)
     await self.session.log(f"context: replaced {cut - 2} messages with notes")
     self.prompt_tokens = self.estimate_prompt_tokens()
     return True
-
-  def drop_thinking_after(self, changed: int) -> None:
-    """Drops thinking blocks from assistant turns after `messages[changed]`.
-
-    Args:
-      changed: Message index that was modified by compaction.
-    """
-    for m in self.messages[changed + 1 :]:
-      if m["role"] == "assistant":
-        drop_thinking(m)
 
   def cut_unread(self) -> bool:
     """Truncates unread tool results as a last resort when context is full.

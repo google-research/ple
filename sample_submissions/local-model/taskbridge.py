@@ -1342,7 +1342,7 @@ class Finished:
   """Exit status and captured stderr tail of a finished agent subprocess."""
 
   code: int  # the exit code; -1 when it was stopped before it exited
-  stderr: str  # the last lines of stderr
+  stderr: str  # the last lines of stderr, 2,000 characters of each at most
   stopped: bool = False  # stopped before the deadline (stop_before_sec)
 
 
@@ -1480,7 +1480,7 @@ async def run_process(
   async def pump_err():
     async for line in lines(proc.stderr):
       text = line.decode("utf-8", "replace").rstrip()
-      err.append(text)
+      err.append(text[:2000])  # a line can be MAX_LINE long
       del err[:-50]
       print(f"{log_prefix}{text}", file=sys.stderr, flush=True)
       if text:

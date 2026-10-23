@@ -30,25 +30,47 @@ not to modify any files.
 import asyncio
 import json
 import os
+import re
 
 import openai
 import taskbridge
 
 MODEL = os.environ["MODEL_NAME"]
-# The model's highest reasoning level: max for Claude, high for the others
-# (Gemini refuses max). REASONING_EFFORT overrides it.
+# The model's highest reasoning level: max for Claude, GLM, GPT-6 and
+# DeepSeek-V4, high for the others (Gemini refuses max). REASONING_EFFORT
+# overrides it.
+MAX_EFFORT_MODELS = ("claude", "glm", "gpt-6", "deepseek-v4")
 EFFORT = os.environ.get("REASONING_EFFORT") or (
-    "max" if "claude" in MODEL.lower() else "high"
+    "max" if any(m in MODEL.lower() for m in MAX_EFFORT_MODELS) else "high"
 )
 # a fix round wraps up this long before the time limit, and a wrap-up call may
 # take as long
 WRAP_UP_SEC = 240
+WRAP_UP = {
+    "role": "user",
+    "content": "Time is up for this step. Stop and reply with your answer.",
+}
 RESULT_CHARS = 20_000  # a longer tool result loses its middle
+# Seconds between retries once the SDK's own quick retries are exhausted.
+RETRY_WAITS = (5, 15, 30, 60, 120)
+# How endpoints word a 400 saying the conversation no longer fits the context
+# window: Claude, OpenAI and vLLM, Gemini, xAI.
+CONTEXT_FULL = re.compile(
+    r"context.?(length|window)|prompt is too long|maximum prompt length"
+    r"|exceed[^.]{0,40}(token|context)",
+    re.I,
+)
+CUT_KEEP = 1000  # characters a tool result keeps once the context is full
 # times in a row an empty or cut-off reply gets a "continue" before the run
 # stops
 MAX_NUDGES = 3
 # lower it for a small context window
 MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "32000"))
+# Claude caches a prompt prefix only when marked with cache_control. Each call
+# marks the system prompt and the latest message (using 2 of Claude's 4 cache
+# breakpoints) so each turn reads the prior conversation from cache. Other
+# providers cache automatically without markers.
+CACHE_MARK = "claude" in MODEL.lower()
 # the planner wraps up once it has used this share of the task's time
 PLAN_SHARE = 0.1
 # the worker wraps up when this share is left, to keep time for checking and
@@ -59,10 +81,12 @@ CHECK_SHARE = 0.25
 MIN_STEP_SEC = 120
 MAX_FIX_ROUNDS = 2
 
-# The evaluator sets OPENAI_BASE_URL and OPENAI_API_KEY for every model, so the
-# client needs no arguments for them. The SDK retries rate limits and server
-# errors on its own.
-client = openai.AsyncOpenAI(max_retries=5, timeout=900)
+# The evaluator sets OPENAI_BASE_URL and OPENAI_API_KEY for every model.
+# The SDK handles quick retries; recover() handles longer backoffs. Because
+# calls are non-streaming, a max-effort response can take over 15 minutes
+# before any bytes arrive, so the timeout matches the egress proxy's 30-minute
+# idle limit.
+client = openai.AsyncOpenAI(max_retries=5, timeout=1800)
 
 PLANNER = """You plan an engineering task that another engineer will carry out in a Linux container with no internet \
 access. Inspect the task's files with your tools (bash starts in {workdir}), but do not create or change any file. \
@@ -142,6 +166,38 @@ def clip(text):
   )
 
 
+def marked(messages):
+  """Returns the messages a model call sends.
+
+  For Claude, this is a copy whose system prompt and newest message carry
+  `cache_control`. The stored conversation stays as it is, so each turn marks
+  its own newest message.
+
+  Args:
+    messages: The conversation so far, in OpenAI chat format.
+
+  Returns:
+    `messages` itself for other models, or the marked copy for Claude.
+  """
+  if not CACHE_MARK:
+    return messages
+  out = list(messages)
+  for i in {0, len(out) - 1}:
+    m, content = out[i], out[i].get("content")
+    if isinstance(content, str) and content:
+      out[i] = {
+          **m,
+          "content": [{
+              "type": "text",
+              "text": content,
+              "cache_control": {"type": "ephemeral"},
+          }],
+      }
+    else:
+      out[i] = {**m, "cache_control": {"type": "ephemeral"}}
+  return out
+
+
 async def run_tool(session, fn):
   """Executes a single tool call in the task container and returns its output.
 
@@ -187,6 +243,73 @@ async def run_tool(session, fn):
     return f"error: {type(exc).__name__}: {exc}"
 
 
+async def recover(session, messages, exc, waits, until):
+  """Handles a failed model call and returns whether to retry.
+
+  On a 400 context-overflow error, shortens the oldest tool results. On a rate
+  limit, server error, or connection drop, sleeps for the next interval in
+  `RETRY_WAITS` (capped at the step's wrap-up deadline). Errors are logged
+  rather than added to the conversation.
+
+  Args:
+    session: Active `taskbridge.Session` for the task.
+    messages: The conversation, shortened in place when the context is full.
+    exc: The `openai.APIError` the call raised.
+    waits: Iterator over the remaining intervals in `RETRY_WAITS`.
+    until: Seconds before the time limit at which the step wraps up.
+
+  Returns:
+    `True` to retry the call, `False` to re-raise.
+  """
+  status = getattr(exc, "status_code", None)  # None: no HTTP answer
+  if status == 400 and CONTEXT_FULL.search(str(exc)):
+    return await shorten(session, messages)
+  wait = next(waits, None)
+  if wait is None or not (
+      status is None or status in (408, 409, 429) or status >= 500
+  ):
+    return False
+  left = session.time_left()
+  if left is not None and left > until:
+    wait = min(wait, left - until)
+  await session.log(
+      f"model call failed ({str(exc)[:200]}); again in {wait:.0f} s"
+  )
+  await asyncio.sleep(wait)
+  return True
+
+
+async def shorten(session, messages):
+  """Truncates the older half of long tool results to `CUT_KEEP` characters.
+
+  Repeated calls truncate progressively newer results. Claude's thinking blocks
+  are kept intact because each block's signature is self-contained and Claude
+  rejects tool loops if the latest assistant turn loses its thinking block.
+
+  Args:
+    session: Active `taskbridge.Session` for the task.
+    messages: The conversation, modified in place.
+
+  Returns:
+    Whether any tool result was truncated.
+  """
+  long = [
+      n
+      for n, m in enumerate(messages)
+      if m["role"] == "tool" and len(m["content"]) > 2 * CUT_KEEP
+  ]
+  if not long:
+    return False
+  cut = long[: max(1, len(long) // 2)]
+  for n in cut:
+    messages[n]["content"] = (
+        messages[n]["content"][:CUT_KEEP]
+        + "\n[... cut to save context; run the tool again if needed]"
+    )
+  await session.log(f"context full: cut {len(cut)} old tool results")
+  return True
+
+
 def conversation(system, session, prompt):
   """Creates the initial `[system, user]` message list for a role.
 
@@ -223,17 +346,12 @@ async def agent(session, messages, tools, until, final=False):
     The final text response produced by this agent step.
   """
   # head: the start of an answer cut off at the output limit
-  nudges, head = 0, ""
+  nudges, head, waits = 0, "", iter(RETRY_WAITS)
   while True:
     left = session.time_left()  # None when the task has no time limit
     wrap_up = left is not None and left < until
-    if wrap_up:
-      messages.append({
-          "role": "user",
-          "content": (
-              "Time is up for this step. Stop and reply with your answer."
-          ),
-      })
+    if wrap_up and messages[-1:] != [WRAP_UP]:  # asked once, also on a retry
+      messages.append(dict(WRAP_UP))
     # A call still running when the wrap-up starts is stopped. The wrap-up call
     # itself gets at most WRAP_UP_SEC and stops at the time limit; if it takes
     # longer, the step returns head, its answer so far.
@@ -247,7 +365,7 @@ async def agent(session, messages, tools, until, final=False):
       reply = await asyncio.wait_for(
           client.chat.completions.create(
               model=MODEL,
-              messages=messages,
+              messages=marked(messages),
               tools=tools,
               tool_choice="none" if wrap_up else "auto",
               reasoning_effort=EFFORT,
@@ -259,9 +377,18 @@ async def agent(session, messages, tools, until, final=False):
       if wrap_up:
         return head
       continue
+    except openai.APIError as exc:
+      if await recover(session, messages, exc, waits, until):
+        continue
+      raise
+    waits = iter(RETRY_WAITS)
     if reply.usage:
+      details = getattr(reply.usage, "prompt_tokens_details", None)
       await session.usage(
-          MODEL, reply.usage.prompt_tokens, reply.usage.completion_tokens
+          MODEL,
+          reply.usage.prompt_tokens,
+          reply.usage.completion_tokens,
+          getattr(details, "cached_tokens", 0) or 0,
       )
     message, cut = (
         reply.choices[0].message,

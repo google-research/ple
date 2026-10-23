@@ -13,7 +13,7 @@ without code changes.
 | `gemini/<model>` | Google AI Studio (your account) | `GEMINI_API_KEY=...` | `generativelanguage.googleapis.com` |
 | `openai-compatible/<model>` + `model_base_url` | Your own server (vLLM, SGLang, etc.) or any compatible provider | `MODEL_API_KEY=...` | Host of `model_base_url` |
 
-The leaderboard shows the model beside each entry. Put any required API key in `.env` ([`kit/README.md`](../kit/README.md#env)).
+The leaderboard shows the model beside each entry. Put any required API key in `.env` ([`kit/README.md`](../kit/README.md#env)). With your own API key or model server, you pay for every model call the evaluation server makes, including three runs of the test set. Your key's rate limits or your server must sustain about 36 tasks at once ([Submissions](rules.md#submissions)).
 
 ## Google-sponsored models (`google-cloud/<id>`)
 
@@ -22,10 +22,10 @@ free on our servers:
 
 | `model_api` | Model | Supported APIs |
 |---|---|---|
-| `google-cloud/claude-opus-5-5` | Claude Opus 5.5 | OpenAI Chat Completions, Anthropic Messages |
 | `google-cloud/gemini-4-argon` | Gemini 4 Argon | OpenAI Chat Completions, Gemini API |
 | `google-cloud/gemini-3.8-flash` | Gemini 3.8 Flash | OpenAI Chat Completions, Gemini API |
 | `google-cloud/gemini-3.1-pro-preview` | Gemini 3.1 Pro (preview) | OpenAI Chat Completions, Gemini API |
+| `google-cloud/claude-opus-5-5` | Claude Opus 5.5 | OpenAI Chat Completions, Anthropic Messages |
 | `google-cloud/gpt-oss-120b` | gpt-oss 120B | OpenAI Chat Completions |
 | `google-cloud/qwen3-coder-480b` | Qwen3 Coder 480B A35B | OpenAI Chat Completions |
 | `google-cloud/qwen3-next-80b` | Qwen3-Next 80B A3B Instruct | OpenAI Chat Completions |
@@ -88,11 +88,29 @@ import os
 from openai import AsyncOpenAI
 
 client = AsyncOpenAI()  # reads OPENAI_BASE_URL and OPENAI_API_KEY
+MODEL = os.environ["MODEL_NAME"]
+CACHE = {"type": "ephemeral"}
+
+
+def marked(messages):
+    """Mark the system prompt and newest message for Claude prompt caching (other models cache automatically)."""
+    if "claude" not in MODEL.lower():
+        return messages
+    out = list(messages)
+    for i in {0, len(out) - 1}:
+        if isinstance(out[i].get("content"), str) and out[i]["content"]:
+            out[i] = {**out[i], "content": [{"type": "text", "text": out[i]["content"], "cache_control": CACHE}]}
+    return out
 
 
 async def ask(messages, tools):
-    return await client.chat.completions.create(model=os.environ["MODEL_NAME"], messages=messages, tools=tools)
+    return await client.chat.completions.create(model=MODEL, messages=marked(messages), tools=tools)
 ```
+
+Claude only caches prompt prefixes at explicit cache breakpoints, so mark the
+system prompt and the newest message (see
+[Tips for calling models](#tips-for-calling-models)). Without those marks,
+every turn re-processes the full conversation.
 
 For Claude and Gemini models, the Anthropic and Gemini SDKs read their
 respective variables from the table above.
@@ -104,7 +122,7 @@ both streamed and non-streamed responses) works. Because the evaluation server
 reaches it over the internet:
 
 - `model_base_url` must be an `https://` URL (typically ending in `/v1`) on a DNS name with a public IPv4 address and no private IP resolutions.
-- The server must require `Authorization: Bearer <MODEL_API_KEY>`, accept the model name after `openai-compatible/`, and handle about 12 concurrent tasks until your run finishes.
+- The server must require `Authorization: Bearer <MODEL_API_KEY>`, accept the model name after `openai-compatible/`, and handle about 36 concurrent tasks until your submission is scored.
 - Test-set prompts and files reach your server, so it must not log or store them.
 
 [`local-models.md`](local-models.md) shows how to serve a model from your own GPUs, and [`sample_submissions/local-model/`](../sample_submissions/local-model/) is a complete entry configured this way.
@@ -114,22 +132,51 @@ reaches it over the internet:
 - Stream long generations, or give your client generous timeouts. Reasoning
   models can think silently for several minutes before the first token, and the
   egress proxy closes any connection that transfers no bytes for 30 minutes.
-- Retry HTTP `429`, timeouts, and `5xx` responses with exponential backoff. A `400` means the request itself was invalid, so retrying it unchanged won't help.
-- A Google-sponsored model called without a reasoning level thinks at its
-  highest: `max` for Claude and GLM, `high` for Gemini, gpt-oss, Kimi, and
-  MiniMax. The evaluation server and `kit/model_proxy` both add it. Set
-  `reasoning_effort` (or `thinking`) yourself to use a lower level.
-- Gemini 4 Argon takes a thinking level, `low`, `medium`, or `high`
-  (`reasoning_effort`, or `thinkingConfig.thinkingLevel` in the Gemini API), and
-  returns `400` for a thinking budget (`thinkingBudget`, even `0`). The Gemini
-  API also accepts `MAX`, but Argon thinks less at `MAX` than at `high`, so
-  `high` is its highest level. In OpenAI Chat Completions a `thinking` budget is
-  not refused but not applied either: Argon then thinks at its own default,
-  `medium`. It writes at most 65,536 output tokens, and its 1,048,576-token
-  context holds the input, the thinking, and the output together.
+- If your harness wraps the Claude Code CLI, set `API_FORCE_IDLE_TIMEOUT=0` in
+  its environment. Otherwise the CLI drops any stream that stays silent for 5 to
+  6 minutes ("API Error: The operation timed out."), regardless of other timeout
+  settings.
+- Claude requires explicit cache breakpoints: put
+  `"cache_control": {"type": "ephemeral"}` on the system prompt and the newest
+  message (up to 4 breakpoints are allowed). See `minimal`, `plan-verify`, and
+  `node-protocol` for examples. Gemini, OpenAI, and vLLM cache prefixes
+  automatically.
+- Retry HTTP `429`, timeouts, and `5xx` responses with exponential backoff; do
+  not retry `400` responses without changing the request. Also retry dropped
+  connections, mid-stream error events, and streams that end without a finish
+  reason, and discard any partial response so the model never sees an incomplete
+  turn in its conversation history.
+- When you call a Google-sponsored model without specifying a reasoning level,
+  the evaluation server and `kit/model_proxy` default to the model's highest
+  setting: `max` for Claude and GLM, and `high` for Gemini, gpt-oss, Kimi, and
+  MiniMax. Pass `reasoning_effort` (or `thinking`) explicitly to use a lower
+  level. LLM judge calls are the one exception: they run at the model's standard
+  default (via `<model>-judge` on `kit/model_proxy`). A judge request that
+  Claude Opus 5.5 refuses is sent once to Claude Opus 5, by the evaluation
+  server and by `kit/model_proxy`; harness requests are never re-sent.
+- Gemini 4 Argon takes a thinking level—`low`, `medium`, or `high` (via
+  `reasoning_effort`, or `thinkingConfig.thinkingLevel` in the Gemini API)—and
+  returns `400` if you pass a token budget (`thinkingBudget`, even `0`). Use
+  `high` for maximum reasoning (the Gemini API also accepts `MAX`, but Argon
+  reasons less at `MAX` than at `high`). In OpenAI Chat Completions, a
+  `thinking` budget is ignored and Argon falls back to `medium`. Argon supports
+  up to 65,536 output tokens within a 1,048,576-token context window shared
+  across input, thinking, and output.
 - Claude Opus 5.5 returns `400` if you set `temperature`, `top_p`, `top_k`, a
   thinking budget (`budget_tokens`), `thinking: {"type": "disabled"}`, or a
   forced tool choice (`tool_choice: "required"` or a named function; `any` or
   `tool` in Anthropic Messages). Use `auto` or `none`, and set `max_tokens`
   generously (`32000` is a good default).
 - Track the remaining time in `limits.agent_timeout_sec` and finish your model calls before it runs out.
+- Provider-hosted tools are not allowed ([Fair play](rules.md#fair-play)). For
+  `google-cloud` models, both the evaluation server and `kit/model_proxy` reject
+  requests that enable them with HTTP `400`: Gemini Google Search, URL context,
+  and code execution; Claude web search, web fetch, and code execution; and
+  OpenAI `web_search_options` or hosted tools (web search, file search, code
+  interpreter, computer use, remote MCP). With your own API key, requests go
+  straight to the provider, so your harness must not enable those tools
+  either—always use function tools that run inside the task container.
+  `kit/model_proxy` only exposes the endpoints harnesses use (Chat Completions,
+  Anthropic Messages, the Responses API, and Gemini
+  `generateContent`/`streamGenerateContent`) and returns `400` for any other
+  route.

@@ -52,12 +52,12 @@ artifacts/
 Each task in [`eval/dev_set.yaml`](../eval/dev_set.yaml) lists its
 `deliverables`: the files and folders in the task container that its grader
 reads. After a trial, the exporter copies every regular file under those paths
-that your harness created or modified. For example, a run of `jobshop-scheduler`
-that updated the baseline scheduler produces:
+that your harness created or modified. For example, a run of
+`data-center-site-model` produces:
 
 ```
-artifacts/jobshop-scheduler/final_message.md
-artifacts/jobshop-scheduler/files/app/files/frontier__JobShop__ft/baseline/init.py
+artifacts/data-center-site-model/final_message.md
+artifacts/data-center-site-model/files/app/files/frontier__DCBim__p6_002/submission/model.ifc
 ```
 
 The exporter skips:
@@ -93,9 +93,9 @@ uv run python -m kit artifacts <entry> --from <run dir>
 2. For each dev task, we start a fresh task container, remove the paths listed
    in `deleted.txt`, copy your `files/` into place, record your
    `final_message.md`, and run the task's grader. Your harness does not run in
-   this step. Your dev score is the mean over all dev tasks, and a task without
-   usable artifacts scores `0`.
-3. We run your harness on a few dev tasks to check that it reproduces your artifacts' scores ([reproduction check](rules.md#dev-score-and-reproduction-check)).
+   this step. Your dev score is the mean over all 29 dev tasks, and a task
+   without usable artifacts scores `0`.
+3. We run your harness live on a random sample of dev tasks to check that it reproduces your artifacts' scores ([reproduction check](rules.md#dev-score-and-reproduction-check)).
 
 The server's build strips `artifacts/` (and every fallback folder name listed
 below) from `/opt/harness`, so do not put harness code in folders with those
@@ -145,6 +145,7 @@ A dev task scores `0` when its folder holds:
 - Two deliverable paths that differ only in letter case
 - A Git LFS pointer instead of the actual file
 - Nothing to grade (no deliverable file and no non-empty `final_message.md`)
+- Only `final_message.md`, for a task whose grader only reads deliverable files
 
 A file, symlink, or submodule placed where the task's folder should be also
 scores `0`.
@@ -191,7 +192,7 @@ layout):
 | `Artifacts/`, `artifact/`, `dev_artifacts/`, `dev-artifacts/` | `artifacts/` |
 | `runs/<run>/artifacts/` (when exactly one such folder exists) | `artifacts/` |
 | One extra wrapper folder, e.g. `artifacts/my-harness/<task-id>/` | `artifacts/<task-id>/` |
-| A Harbor trial folder name, e.g. `jobshop-scheduler__a1B2c3D` | `jobshop-scheduler` |
+| A Harbor trial folder name, e.g. `data-center-site-model__a1B2c3D` | `data-center-site-model` |
 | A task ID with different letter case, underscores, or spaces in place of `-` | The matching `<task-id>` |
 | `<task-id>/app/files/...` (without the `files/` level) | `<task-id>/files/app/files/...` |
 | `<task-id>/init.py` or `<task-id>/files/init.py` (when the task has a single deliverable with that filename) | That deliverable's full path |
@@ -211,7 +212,7 @@ run produced each file:
 ```json
 {
   "format": 1,
-  "dev_set": "sha256 of eval/dev_set.yaml",
+  "dev_set": "sha256 of eval/dev_set.yaml's data (comments do not count)",
   "created": "2026-10-10T12:00:00Z",
   "harness": {
     "name": "my-harness",
@@ -222,14 +223,14 @@ run produced each file:
     "dirty": false
   },
   "tasks": {
-    "jobshop-scheduler": {
+    "data-center-site-model": {
       "run": "my-harness-20261010-120000",
-      "trial": "jobshop-scheduler__a1B2c3D",
+      "trial": "data-center-site-model__a1B2c3D",
       "ended": "ok",
       "reward": 0.83,
       "tree": "the harness digest of that run",
       "final_message": "git blob id",
-      "files": {"app/files/frontier__JobShop__ft/baseline/init.py": "git blob id"},
+      "files": {"app/files/frontier__DCBim__p6_002/submission/model.ifc": "git blob id"},
       "deleted": [],
       "skipped": []
     }

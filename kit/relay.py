@@ -80,6 +80,12 @@ TAIL_BYTES = P.MAX_OUTPUT_BYTES - HEAD_BYTES - 64 - 80
 OBSERVATION_CHARS = 20_000  # of each result, in the run's record
 ARGUMENT_CHARS = 2_000  # of each request's command, path or URL, likewise
 RECEIVE_QUEUE = 4  # frames websockets holds before the relay reads them
+# Bound on bytes waiting unsent to the harness (one result frame plus pongs):
+# websockets answers every ping regardless of the backlog, so a harness that
+# pings without reading would grow it unboundedly; past the bound (checked
+# every UNSENT_CHECK_SEC) the session ends.
+MAX_UNSENT_BYTES = 4 * P.MAX_FRAME_BYTES
+UNSENT_CHECK_SEC = 1
 # wait for cut-short requests' commands to stop (an executor's stop takes up to
 # 25 s)
 STOPS_SEC = 30
@@ -658,7 +664,7 @@ def _host_port(url: str) -> str:
 
 
 def safe(text) -> str:
-  """Harness-sent text as storable UTF-8 (an unpaired surrogate becomes "?")."""
+  """Replaces any unpaired UTF-16 surrogates in `text` with `"?"`."""
   return str(text).encode("utf-8", "replace").decode("utf-8")
 
 
@@ -683,7 +689,7 @@ def _local_copy(data: bytes) -> str:
 
 
 def _discard_local(writing: asyncio.Future[str]) -> None:
-  """Remove the local copy an upload cut short still wrote."""
+  """Removes the temporary local file left by an interrupted upload."""
   if not writing.cancelled() and writing.exception() is None:
     with contextlib.suppress(OSError):
       os.unlink(writing.result())
@@ -713,6 +719,8 @@ EGRESS_KILLED = (
 )
 # every request the time limit cut short or refused gets this
 CANCELLED = "cancelled: the time is up"
+# and every request still running or waiting when the session ends otherwise
+ENDED = "cancelled: the task ended"
 
 
 class Kept:
@@ -1449,23 +1457,43 @@ class Relay:
         else:
           await self._closed_early(f"the connection closed before done ({exc})")
 
+    async def flooded() -> None:
+      """Returns once more than MAX_UNSENT_BYTES wait unsent to the harness."""
+      transport = getattr(ws, "transport", None)
+      unsent = getattr(transport, "get_write_buffer_size", None)
+      if unsent is None:  # a socket that cannot tell
+        await asyncio.Future()
+      while unsent() <= MAX_UNSENT_BYTES:
+        await asyncio.sleep(UNSENT_CHECK_SEC)
+
     reader = asyncio.ensure_future(frames())
     stopper = asyncio.ensure_future(failed.wait())
+    flood = asyncio.ensure_future(flooded())
     try:
-      await asyncio.wait({reader, stopper}, return_when=asyncio.FIRST_COMPLETED)
+      await asyncio.wait(
+          {reader, stopper, flood}, return_when=asyncio.FIRST_COMPLETED
+      )
       if reader.done():
         reader.result()
-      else:  # the evaluator failed: no use going on
+      else:
         reader.cancel()
         await asyncio.gather(reader, return_exceptions=True)
-        o.status, o.reason = "error", f"the evaluator failed: {o.infra}"
+        if stopper.done():  # the evaluator failed: no use going on
+          o.status, o.reason = "error", f"the evaluator failed: {o.infra}"
+        else:  # nothing sent to the harness reaches it any more
+          _abort(ws)
+          o.status, o.reason = (
+              "error",
+              "the harness kept sending but read nothing: more than"
+              f" {MAX_UNSENT_BYTES >> 20} MiB waited unsent to it",
+          )
         o.note(o.reason)
     except asyncio.CancelledError:
       cancelled = True
       raise
     finally:
-      watchers = (
-          (reader, stopper) if closing is None else (reader, stopper, closing)
+      watchers = (reader, stopper, flood) + (
+          () if closing is None else (closing,)
       )
       for task in (*watchers, *pending):
         task.cancel()
@@ -1479,7 +1507,7 @@ class Relay:
       # After a cancel, _cancel sends them after its cancel frame (self._due,
       # the same list); otherwise they go now, within CANCEL_GRACE_SEC.
       self._stops = asyncio.gather(*pending, return_exceptions=True)
-      ended = CANCELLED if cancelled else "cancelled: the task ended"
+      ended = CANCELLED if cancelled else ENDED
       due = self._due = list(owed) + [
           (rid, ended) for rid in [*inflight.values(), *waiting]
       ]
@@ -1506,7 +1534,7 @@ class Relay:
       except asyncio.CancelledError:
         self._due = [
             (rid, CANCELLED)
-            if error == "cancelled: the task ended"
+            if error == ENDED
             else (rid, error)
             for rid, error in due
         ]
@@ -1547,8 +1575,6 @@ class Relay:
           user=user,
           timeout_sec=timeout_sec + KILL_GRACE_SEC + EXEC_MARGIN_SEC,
       )
-    except asyncio.CancelledError:  # pylint: disable=try-except-raise
-      raise
     except (UnicodeError, ValueError) as exc:
       raise RequestError(f"the request cannot be run: {exc}") from exc
     except OSError as exc:
@@ -1613,8 +1639,6 @@ class Relay:
       if not await healthy():
         return False
       return not (await self._egress(""))[0]
-    except asyncio.CancelledError:  # pylint: disable=try-except-raise
-      raise
     except Exception:  # pylint: disable=broad-exception-caught
       # cannot tell
       return False
@@ -1635,21 +1659,17 @@ class Relay:
       code, _ = await self.executor.exec(
           "true", cwd="/", timeout_sec=PROBE_TIMEOUT_SEC
       )
-    except asyncio.CancelledError:  # pylint: disable=try-except-raise
-      raise
     except Exception:  # pylint: disable=broad-exception-caught
       # an exception means it does not answer
       return False
     return code == 0
 
   async def _remove(self, upload: str) -> None:
-    """Best effort: a staged file left in /tmp does not fail the request."""
+    """Removes the temporary staged file `upload` inside the container."""
     try:
       await self.executor.exec(
           f"rm -f {upload}", cwd="/", timeout_sec=30, user="root"
       )
-    except asyncio.CancelledError:  # pylint: disable=try-except-raise
-      raise
     except Exception as exc:  # pylint: disable=broad-exception-caught
       self.outcome.note(f"could not remove {upload}: {exc}")
 
@@ -1659,7 +1679,7 @@ class Relay:
     )
 
   async def _bounded(self, script: str, timeout: int) -> tuple[int, str]:
-    """A short bash script under `timeout`, as every request is."""
+    """Runs a helper bash `script` in the task container with `timeout`."""
     return await self._exec(
         f"timeout -k {KILL_GRACE_SEC} {timeout} bash -c {shlex.quote(script)}",
         timeout,
@@ -1776,8 +1796,6 @@ class Relay:
         await asyncio.wait_for(
             self.executor.upload(local, remote), UPLOAD_TIMEOUT_SEC
         )
-      except asyncio.CancelledError:  # pylint: disable=try-except-raise
-        raise
       except asyncio.TimeoutError:
         stuck = TimeoutError(
             f"the copy did not finish within {UPLOAD_TIMEOUT_SEC} s"
@@ -2049,7 +2067,7 @@ def observe(result: dict[str, Any]) -> str:
 
 
 class DockerExecutor:
-  """A plain container as the task container (kit check)."""
+  """Executor that runs commands in a plain Docker container (`kit check`)."""
 
   def __init__(self, container: str, user: str | None = None):
     self.container, self.user = container, user

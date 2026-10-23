@@ -59,8 +59,10 @@ TASK_IMAGE = "python:3.12-slim"
 # The local task container gets the smallest dev task's CPUs and memory
 # (task.toml: 2 CPUs, 4 GB), the server's file-size limit, a process limit and a
 # 1 GB /app in memory, so that a runaway smoke task cannot take this machine
-# down. eval/run.py gives the dev tasks' containers the same process limit.
-TASK_PIDS = 1024
+# down. eval/run.py gives the dev tasks' containers the same process limit. It
+# grows with this machine's CPUs, as a task's servers may start a worker per CPU
+# they see (e.g., nginx's `worker_processes auto`).
+TASK_PIDS = max(4096, 8 * (os.cpu_count() or 1))
 TASK_LIMITS = (
     "--cpus",
     "2",
@@ -267,6 +269,44 @@ def key_lines(path: pathlib.Path, deadline: float) -> list[int] | None:
       carry = window[last - ctx :]
 
 
+def crlf_scripts(sub: spec.Submission, root: pathlib.Path) -> list[str]:
+  """Returns the scripts that `install` and `serve` name with CRLF line endings.
+
+  A Windows checkout (Git for Windows with `core.autocrlf`) ends every line with
+  a carriage return, on which bash fails (`$'\\r': command not found`) and a
+  `#!` line names no interpreter. Python and Node read such files as they are,
+  so only shell scripts (`.sh`, `.bash`) and `#!` files count.
+
+  Args:
+    sub: Parsed submission specification.
+    root: The staged source, which `{src}` names.
+
+  Returns:
+    The `{src}/...` words of `install` and `serve` that name such a file.
+  """
+  try:
+    words = shlex.split(sub.install, comments=True)
+  except ValueError:  # install is the shell's to read; serve splits (spec)
+    words = []
+  found = []
+  for word in words + shlex.split(sub.serve, comments=True):
+    if not word.startswith("{src}/") or word in found:
+      continue
+    path = root / word[len("{src}/") :]
+    if not path.is_file():
+      continue
+    try:
+      with path.open("rb") as fh:
+        head = fh.read(1 << 20)
+    except OSError:
+      continue
+    if b"\r\n" in head and (
+        path.suffix in (".sh", ".bash") or head.startswith(b"#!")
+    ):
+      found.append(word)
+  return found
+
+
 PROBE = f"CALL_SEC = {PROBE_CALL_SEC}\n" + r"""
 import json, os, time, urllib.error, urllib.request
 class Refused(Exception):
@@ -309,6 +349,51 @@ class Stage:
   detail: str = ""
 
 
+# Shortest value scrub() replaces: shorter ones are not keys and would match
+# ordinary words.
+SCRUB_MIN = 6
+# a variable named like a key, in the environment or an --env-file
+KEY_NAME = re.compile(
+    r"(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?)$", re.IGNORECASE
+)
+
+
+def secret_values(
+    dotenv: dict[str, str], values: dict[str, str]
+) -> dict[str, str]:
+  """Returns secret values mapped to their redacted placeholder labels.
+
+  Args:
+    dotenv: Variables parsed from the submission's `.env` file.
+    values: Local environment and `--env-file` variables.
+
+  Returns:
+    A mapping from a label (`.env NAME`, or the name of a variable named like a
+    key, such as `MODEL_PROXY_KEY` or `JUDGE_API_KEY`) to its value.
+  """
+  out = {f"{spec.ENV_FILE} {k}": v for k, v in dotenv.items()}
+  out.update({k: v for k, v in values.items() if v and KEY_NAME.search(k)})
+  return out
+
+
+def scrub(text: str, hidden: dict[str, str]) -> str:
+  """Returns `text` with each value of `hidden` replaced by `[its label]`.
+
+  Args:
+    text: Text that may quote a key, such as a server's log or an endpoint's
+      error.
+    hidden: A mapping from a label to the value it stands for
+      (`secret_values`).
+
+  Returns:
+    `text` without any value of at least `SCRUB_MIN` characters.
+  """
+  for label, value in sorted(hidden.items(), key=lambda kv: -len(kv[1])):
+    if len(value) >= SCRUB_MIN:
+      text = text.replace(value, f"[{label}]")
+  return text
+
+
 @dataclasses.dataclass
 class Report:
   """Aggregated results across all stages of a `kit check` run."""
@@ -320,6 +405,20 @@ class Report:
   # why the entry is not ready to submit though every stage passes (an UNREADY
   # key), or ""
   unready: str = ""
+
+  def __post_init__(self):
+    # values add() scrubs (hide); not a dataclass field, so check.json never
+    # holds them
+    self._hidden: dict[str, str] = {}
+
+  def hide(self, hidden: dict[str, str]) -> None:
+    """Registers secret values to redact from subsequent stage output (`scrub`).
+
+    Args:
+      hidden: A mapping from a label to the value it stands for
+      (`secret_values`).
+    """
+    self._hidden.update(hidden)
 
   @property
   def ok(self) -> bool:
@@ -358,14 +457,23 @@ class Report:
     Returns:
       The recorded `Stage` instance.
     """
-    stage = Stage(name, status, detail)
+    stage = Stage(name, status, scrub(detail, self._hidden))
     self.stages.append(stage)
     mark = {"pass": "PASS", "warn": "WARN", "fail": "FAIL", "skip": "skip"}[
         status
     ]
-    print(f"[{mark}] {name}" + (f": {detail}" if detail else ""), flush=True)
+    print(
+        f"[{mark}] {name}" + (f": {stage.detail}" if stage.detail else ""),
+        flush=True,
+    )
     return stage
 
+
+# A task stage's FAIL detail when the relay's outcome is the evaluator's failure
+EVALUATOR_FAILED = (
+    "the evaluator's side failed here, not your harness (the local task"
+    " container or egress proxy): "
+)
 
 # What check() says after "the stages that ran pass, but " for each
 # Report.unready reason
@@ -817,6 +925,19 @@ def outcome_record(o: relay.Outcome) -> dict[str, Any]:
   return {**fields, "steps": o.steps, "log": o.log}
 
 
+def _remove_task(name: str) -> None:
+  """Removes the task container `name` without raising on error.
+
+  Any container that Docker fails to remove immediately is cleaned up later by
+  `stack.sweep()`.
+
+  Args:
+    name: The task container's name.
+  """
+  with contextlib.suppress(stack.InfraError):
+    stack.docker("rm", "-f", name, check=False)
+
+
 class Checker:
   """Runs all validation and execution stages for a submission entry."""
 
@@ -841,6 +962,7 @@ class Checker:
     )
     self.rebuild = rebuild
     self.report = Report(str(src), requested=["cancel"] if cancel_test else [])
+    self.report.hide(secret_values({}, values))
     # started and not yet removed: abort() removes them
     self.stacks: list[stack.Stack] = []
     self.tasks: list[str] = []  # task containers, likewise
@@ -875,8 +997,7 @@ class Checker:
     for st in self.stacks:
       st.stop()  # never raises
     for name in self.tasks:
-      with contextlib.suppress(stack.InfraError):
-        stack.docker("rm", "-f", name, check=False)
+      _remove_task(name)
     self.stacks, self.tasks = [], []
 
   def run(self) -> Report:
@@ -919,6 +1040,7 @@ class Checker:
     # staged or built
     try:
       dotenv = entry_env(self.src)
+      r.hide(secret_values(dotenv, {}))
       rt = runtime(sub, dotenv, self.values, self.base_url)
     except SetupError as exc:
       r.add(exc.stage, "fail", str(exc))
@@ -944,13 +1066,8 @@ class Checker:
       try:
         prep = build.prepare(sub, source, self.work, rebuild=self.rebuild)
       except build.BuildError as exc:
-        # no such file when the build failed before it started
-        log = self.work / "build.log"
-        tail = (
-            "\n".join(log.read_text(errors="replace").splitlines()[-25:])
-            if log.is_file()
-            else ""
-        )
+        # "" when the build failed before it started a log
+        tail = build.log_tail(self.work / "build.log", 25)
         r.add("build", "fail", f"{exc}\n{tail}".rstrip())
         return
       # Docker could not run the builder: not the install's doing
@@ -1086,6 +1203,17 @@ class Checker:
           "serve names files that are not in the repository:"
           f" {', '.join(missing)}; install must create them",
       )
+    crlf = crlf_scripts(sub, source.path)
+    if crlf:
+      r.add(
+          "files",
+          "warn",
+          f"{', '.join(crlf)} has Windows line endings (CRLF), on which bash"
+          " and #! scripts fail on the server's Linux: convert them to LF"
+          " (`sed -i 's/\\r$//' <file>`), and keep git from converting them"
+          " back (`git config core.autocrlf input`, or `* text=auto eol=lf`"
+          " in .gitattributes)",
+      )
     if source.left_out:
       shown = artifacts.shown([f"{f}/" for f in source.left_out])
       r.add(
@@ -1180,14 +1308,7 @@ class Checker:
           for t in rv.tasks.values()
           if t.status in (artifacts.REFUSED, artifacts.EMPTY) and t.problems
       ]
-      if len(reasons) > 12:
-        more = (
-            f"... and {len(reasons) - 12} more (python -m kit artifacts"
-            f" {shlex.quote(str(self.src))})"
-        )
-      else:
-        more = None
-      lines = rv.problems + reasons[:12] + ([more] if more else [])
+      lines = rv.problems + self._first(reasons, 12)
       r.add(
           "artifacts",
           "fail",
@@ -1233,16 +1354,28 @@ class Checker:
         for k in (artifacts.EMPTY, artifacts.REFUSED, artifacts.MISSING)
         if c[k]
     )
-    shown = notes[:15]
-    if len(notes) > 15:
-      shown.append(
-          f"... and {len(notes) - 15} more (python -m kit artifacts"
-          f" {shlex.quote(str(self.src))})"
-      )
-    detail += "".join(f"\n  - {n}" for n in shown) + "".join(
+    detail += "".join(f"\n  - {n}" for n in self._first(notes, 15)) + "".join(
         f"\n  - note: {n}" for n in rv.notes
     )
     r.add("artifacts", "warn" if notes else "pass", detail)
+
+  def _first(self, lines: list[str], limit: int) -> list[str]:
+    """Returns the first `limit` of `lines`, then a line counting the rest.
+
+    Args:
+      lines: The artifacts stage's lines.
+      limit: How many to show.
+
+    Returns:
+      `lines` itself when it has `limit` or fewer, else its first `limit` and
+      a line pointing at `python -m kit artifacts` for the rest.
+    """
+    if len(lines) <= limit:
+      return lines
+    return lines[:limit] + [
+        f"... and {len(lines) - limit} more (python -m kit artifacts"
+        f" {shlex.quote(str(self.src))})"
+    ]
 
   def _artifact_keys(self, rv: artifacts.Review) -> list[str]:
     """Scans regular files under the artifacts folder for suspected keys.
@@ -1290,21 +1423,18 @@ class Checker:
     for rel, digest in sorted(source.digests.items()):
       old = last.get(rel)
       if (
-          digest
-          and isinstance(old, list)
+          isinstance(old, list)
           and len(old) == 2
           and old[0] == digest
           and isinstance(old[1], list)
       ):
         files[rel] = old
         continue
-      # a link has no content of its own to scan
-      p, lines = source.path / rel, []
-      if p.is_file() and not p.is_symlink():
-        try:
-          lines = key_lines(p, deadline)
-        except OSError:
-          lines = None
+      # digests holds the staged regular files alone, links being left out
+      try:
+        lines = key_lines(source.path / rel, deadline)
+      except OSError:
+        lines = None
       files[rel] = [digest, lines]
     saved.write_text(json.dumps({"rules": rules, "files": files}))
     hits: list[str] = []
@@ -1374,10 +1504,6 @@ class Checker:
         if mcp
         else ("sleep", "infinity")
     )
-
-    def remove():
-      stack.docker("rm", "-f", name, check=False)
-
     # like its stack's: no age sweep removes a kept one
     owner = "keep" if self.keep else name
     try:
@@ -1400,12 +1526,11 @@ class Checker:
               *command,
               timeout=600,
           ),
-          remove,
+          functools.partial(_remove_task, name),
       )
     # `docker run` can fail after it made the container
     except stack.InfraError:
-      with contextlib.suppress(stack.InfraError):
-        await asyncio.to_thread(remove)
+      await asyncio.to_thread(_remove_task, name)
       raise
     self.tasks.append(name)
     word, deadline = "", time.monotonic() + 60
@@ -1478,7 +1603,7 @@ class Checker:
       if run.st in self.stacks:
         self.stacks.remove(run.st)
       if run.task:
-        await asyncio.to_thread(stack.docker, "rm", "-f", run.task, check=False)
+        await asyncio.to_thread(_remove_task, run.task)
         if run.task in self.tasks:
           self.tasks.remove(run.task)
 
@@ -1687,8 +1812,7 @@ class Checker:
         o.infra = o.infra or str(failure)
     # written after the read, so the relay's note about a container that no
     # longer answers is in the log too
-    log = self.work / f"relay{run.suffix}.log"
-    log.write_text("\n".join(o.log) + "\n", encoding="utf-8", errors="replace")
+    log = run.save_relay_log(o)
     (self.work / f"{stage}.json").write_text(
         json.dumps(outcome_record(o), indent=1, default=str)
     )
@@ -1715,12 +1839,7 @@ class Checker:
     else:
       problem = ""
     if o.infra:
-      r.add(
-          stage,
-          "fail",
-          "the evaluator's side failed here, not your harness (the local task"
-          f" container or egress proxy): {o.infra}",
-      )
+      r.add(stage, "fail", f"{EVALUATOR_FAILED}{o.infra}")
     elif problem and stage == "smoke":
       r.add(stage, "fail", problem)
     elif problem:
@@ -1785,17 +1904,9 @@ class Checker:
         return
       # late enough that the harness is mid-task
       o = await rl.run(ws, LONG, cancel_after=45)
-      log = self.work / f"relay{run.suffix}.log"
-      log.write_text(
-          "\n".join(o.log) + "\n", encoding="utf-8", errors="replace"
-      )
+      run.save_relay_log(o)
       if o.infra:
-        r.add(
-            "cancel",
-            "fail",
-            "the evaluator's side failed here, not your harness (the local"
-            f" task container or egress proxy): {o.infra}",
-        )
+        r.add("cancel", "fail", f"{EVALUATOR_FAILED}{o.infra}")
       elif o.status == "completed":
         r.add(
             "cancel",
@@ -1843,6 +1954,19 @@ class _Run:
         "",
     )
     self.log = checker.work / f"serve{suffix}.log"
+
+  def save_relay_log(self, o: relay.Outcome) -> pathlib.Path:
+    """Writes the relay's log of `o` to `relay<suffix>.log`; returns its path.
+
+    Args:
+      o: The relay's outcome of the stage's task.
+
+    Returns:
+      The path of the written log.
+    """
+    log = self.checker.work / f"relay{self.suffix}.log"
+    log.write_text("\n".join(o.log) + "\n", encoding="utf-8", errors="replace")
+    return log
 
   async def save_log(self) -> bytes:
     """Writes the serve container's output so far to `self.log` and returns it.

@@ -54,7 +54,7 @@ OPENAI_API_KEY=sk-...
 
 - Commit `.env` only to a private repository (the server refuses a public repository that contains `.env`).
 - Keep your entry in its own Git repository outside this clone, whose `.gitignore` ignores `.env`. If your global gitignore lists `.env`, force-add it with `git add -f .env`.
-- The evaluator reads `.env` and deletes it before `install` runs, so your built bundle never contains it; read keys from the environment at runtime.
+- The evaluator reads `.env` and deletes it before `install` runs, so your built bundle never contains it; read keys from the environment at runtime. In `kit build`, the git history `install` can read (commits, tags, the bundled files) holds no committed version of `.env` or `artifacts/` either.
 - Names must use `A-Z`, `0-9`, and `_`. Setting a variable reserved by the
   evaluator, a key for a different model provider, or a name already in `env:`
   is refused. Values are single lines without `${...}` expansion, up to 32
@@ -96,8 +96,16 @@ accept a WebSocket connection on `0.0.0.0:$PORT` within 120 seconds.
 
 Outbound traffic goes strictly through the egress proxy (`HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY`, and `NODE_USE_ENV_PROXY=1`), which connects only
-to your model's API host. Web search and other outside APIs are blocked, and
-connections idle for 30 minutes are closed.
+to your model's API host over TLS (with matching SNI). Web search and external
+APIs are blocked, and connections idle for 30 minutes are closed. Provider-side
+tools (Gemini Google Search, URL context, and code execution; Claude web search,
+web fetch, and code execution; OpenAI `web_search_options` and hosted tools)
+are also forbidden; for `google-cloud` models, both the evaluation server and
+`kit/model_proxy` reject them with HTTP `400`. With your own API key nothing
+refuses them, so your harness must not enable them. On Docker 28+, the serve
+container is also blocked from reaching host services on your machine (older
+Docker versions may still allow connections to host services on `0.0.0.0` via
+the bridge gateway, which the evaluation server blocks).
 
 ### Task
 
@@ -117,13 +125,13 @@ or helper files left outside the deliverable paths are not graded.
 | Server startup | WebSocket accepted on `$PORT` within 120 s |
 | Serve container | 2 CPUs, 4 GB memory, 512 processes, 1 GB `/tmp`, 1 GB `$HOME` |
 | Build | 30 minutes; `/opt/harness` up to 2 GiB packed and 8 GiB unpacked; no file over 8 GiB; no filename or symlink target over 1,024 chars; repository with `.git` history up to 1 GiB |
-| Task container | No file over 8 GiB; host-graded deliverables up to 1 GiB per file and 4 GiB total; local runs cap processes at 1,024 |
+| Task container | No file over 8 GiB; host-graded deliverables up to 1 GiB per file and 4 GiB total; local runs cap processes at 4,096 (8 per CPU on a machine with more than 512 CPUs) |
 | Requests | Command, file, HTTP, and frame limits are in [`docs/protocol.md`](../docs/protocol.md#2-requests-harness-to-evaluator) |
 
 ## Checking an entry locally
 
 ```bash
-uv run python -m kit check ../my-harness [--cancel-test]
+uv run python -m kit check ../my-harness [--cancel-test] [--no-smoke]
 ```
 
 `kit check` runs these stages in order and stops at the first failure:
@@ -132,7 +140,7 @@ uv run python -m kit check ../my-harness [--cancel-test]
 |---|---|
 | `submission.yaml` | Every field and rule of `submission.yaml` |
 | `.env` | `.env` rules and presence of your model's API key |
-| `files` | Files named in `serve` exist; nothing outside `.env` looks like a key; no harness file uses Git LFS; symlinks are checked out as links (`core.symlinks` is not `false`); submodules can be fetched anonymously; the entry is the root of its own repository with everything committed |
+| `files` | Files named in `serve` exist; scripts that `install` and `serve` run have LF line endings (CRLF warns); nothing outside `.env` looks like a key; no harness file uses Git LFS; symlinks are checked out as links (`core.symlinks` is not `false`); submodules can be fetched anonymously; the entry is the root of its own repository with everything committed |
 | `build` | Runs `install` in the builder container and validates the bundle (cached unless files change or `--rebuild` is passed) |
 | `model` | Checks that your model answers a short prompt from your serve image through the egress proxy |
 | `listen` | Verifies your server accepts a WebSocket connection within 120 s |
@@ -143,12 +151,20 @@ uv run python -m kit check ../my-harness [--cancel-test]
 
 It prints `ready to submit` only when every stage passes, `artifacts/` is valid,
 and your entry is at the root of a Git repository with everything committed.
-Otherwise, the last line tells you what to do next.
+Otherwise, the last line tells you what to do next. It exits `0` when every
+stage it ran passed (even if the entry is not yet ready to submit), `1` when a
+stage failed or a check stayed unverified (`--model-base-url`), and `130` when
+interrupted. It needs a local Docker daemon: a remote `DOCKER_HOST` is not
+supported.
 
 Logs are written to `~/.cache/plebench/<name>/` (or `--work <dir>`):
 `build.log`, `serve.log`, `egress.log`, `relay.log`, stage-specific logs
-(`egress-model.log`, `serve-mcp.log`, etc.), and `check.json`.
+(`egress-model.log`, `serve-mcp.log`, etc.), and `check.json`. Secret values
+from `.env` and `MODEL_PROXY_KEY` are redacted as `[.env NAME]` or
+`[MODEL_PROXY_KEY]` in console output and `check.json`, while the raw log files
+under `~/.cache/plebench/` keep your server's unredacted output.
 
+- `--no-smoke` skips the smoke and MCP tasks for a quicker iteration (`listen` and `--cancel-test` still run). The check then never prints `ready to submit`, since the server runs the smoke task.
 - `--keep` leaves the containers running and prints the `docker rm -f` command to remove them.
 - `--env-file` loads `NAME=value` pairs for the local run (`MODEL_PROXY_URL` and `MODEL_PROXY_KEY` for `google-cloud` models) so they stay out of your entry's `.env`.
 - `--model-base-url http://<host>:<port>/v1` points local checks for an
@@ -175,4 +191,4 @@ uv run python -m kit models                   # list the google-cloud models
   bot check blocking cloud IPs only shows up on the server.
 - Submodule `.git` directories: the server checks out each submodule with its `.git` directory (`depth 1`), whereas `kit` stages submodule files without `.git`.
 - Uncached builds: `kit` reuses cached builds when harness files haven't changed, while the server always builds from scratch. Pin your dependencies, or test once with `--rebuild`.
-- Dev-set grading and concurrency: `kit check` only runs the smoke and MCP tasks. Use `eval/run.py` to run the dev set ([`eval/README.md`](../eval/README.md)), and keep in mind the server runs about 12 tasks at once.
+- Dev-set grading and concurrency: `kit check` only runs the smoke and MCP tasks. Use `eval/run.py` to run the 29 dev tasks ([`eval/README.md`](../eval/README.md)), and keep in mind the server runs about 36 tasks at once (three runs of the test set together).

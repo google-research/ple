@@ -39,8 +39,8 @@ MAX_READ_BYTES = MAX_OUTPUT_BYTES * 100
 MAX_HTTP_BYTES = MAX_READ_BYTES
 MAX_WRITE_BYTES = 10_000_000
 # what the evaluator reads back from one docker exec (a 10 MB read is ~13.4 MB
-MAX_EXEC_READ_BYTES = 32 << 20
 # of base64): past it the command is stopped
+MAX_EXEC_READ_BYTES = 32 << 20
 MAX_ID_CHARS = 128
 MAX_LOG_CHARS = 20_000
 MAX_MODELS = 16
@@ -221,8 +221,9 @@ def parse_frame(frame) -> dict[str, Any]:
   if not isinstance(message, dict):
     raise ProtocolError("a frame holds one JSON object")
   if message.get("type") not in REQUESTS + NOTES + ENDS:
+    # the start of the type only: the error goes back in a result frame
     raise ProtocolError(
-        f"unknown type {message.get('type')!r}",
+        f"unknown type {message.get('type')!r:.100}",
         answerable_id(message.get("id")),
     )
   return message

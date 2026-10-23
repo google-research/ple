@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The image submissions are built in and served from. Only /opt/harness is kept from a build, so uv, Node and the
-# Pythons uv installs (UV_PYTHON_PREFERENCE) live there; a venv on Debian's python3 would point outside the bundle.
-# uv copies from its cache (UV_LINK_MODE), which stays behind in /tmp.
+# Base image used to build and run submissions. Because only /opt/harness is
+# carried from the build container into the serve image, uv, Node, and
+# uv-managed Python installations all live under /opt/harness, while build
+# caches stay in /tmp.
 FROM debian:bookworm
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \

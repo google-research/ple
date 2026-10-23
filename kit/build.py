@@ -105,7 +105,7 @@ SHARING = (
 
 
 class BuildError(Exception):  # pylint: disable=g-bad-exception-name
-  """A build failure the participant can fix; the message explains how."""
+  """Raised when a submission build fails due to a user-fixable issue."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -188,15 +188,18 @@ def _refuse_inside(src: pathlib.Path, work: pathlib.Path) -> None:
 
 
 @contextlib.contextmanager
-def locked(work: pathlib.Path):
-  """Acquires an exclusive lock on an entry's work directory during builds.
+def locked(work: pathlib.Path, doing: str = "building"):
+  """Acquires an exclusive lock on a directory while a kit process works in it.
 
-  A second kit process on the same entry (e.g., `kit check` while `eval/run.py`
-  builds, or two concurrent eval runs) waits here and then reuses the first
-  process's bundle when nothing changed instead of replacing files in use.
+  The directory is an entry's work directory during builds, or the dev-set cache
+  while it downloads. A second kit process on the same entry (e.g., `kit check`
+  while `eval/run.py` builds, or two concurrent eval runs) waits here and then
+  reuses the first process's bundle when nothing changed instead of replacing
+  files in use.
 
   Args:
-    work: Work directory to lock.
+    work: Directory to lock.
+    doing: What the holder is doing, for the note a waiting process prints.
   """
   work.mkdir(parents=True, exist_ok=True)
   fd = os.open(work / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
@@ -205,7 +208,7 @@ def locked(work: pathlib.Path):
       fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
       print(
-          f"another kit run is building in {work}; waiting for it to finish",
+          f"another kit run is {doing} in {work}; waiting for it to finish",
           flush=True,
       )
       fcntl.flock(fd, fcntl.LOCK_EX)
@@ -339,7 +342,7 @@ def builder_image(log: pathlib.Path) -> tuple[str, str]:
   recipe = (BUILDER_DIR / "Dockerfile").read_bytes() + env[
       "DOCKER_DEFAULT_PLATFORM"
   ].encode()
-  tag = f"plebench-builder:{hashlib.sha256(recipe).hexdigest()[:16]}"
+  tag = f"{stack.BUILDER_REPO}:{hashlib.sha256(recipe).hexdigest()[:16]}"
   found = stack.image_id(tag)
   if not found:
     with log.open("a") as fh:
@@ -893,49 +896,139 @@ def _stage_git(
 
   Provides the repository history in `dest/.git` during `install` (removed by
   `build.sh` before packing) with the commit's index so `git status` shows only
-  uncommitted changes. A `local` clone hard-links objects where possible;
-  otherwise git's transport copies only objects reachable from branches, tags,
-  and remote-tracking branches, matching the server's GitHub clone.
+  uncommitted changes. The history holds every commit, tree and tag, and the
+  contents of the files the bundle holds, but no version of the committed
+  `.env` or of artifacts/ (a partial clone without file contents, then those
+  files' contents added): `install` runs as root with the internet, and a
+  dependency's install script could otherwise read them back from the history.
+
+  Its size is measured on a full clone, as the server clones it: a `local`
+  clone hard-links objects where possible; otherwise git's transport copies
+  only objects reachable from branches, tags, and remote-tracking branches,
+  matching the server's GitHub clone.
 
   Args:
     src: Source repository path.
     dest: Destination staging directory path.
-    local: Whether to use a local clone that hard-links git objects.
+    local: Whether to measure a local clone that hard-links git objects.
 
   Returns:
-    The size in bytes of `dest/.git`, which counts toward the repository limit.
+    The size in bytes of the full history, which counts toward the repository
+    limit.
 
   Raises:
     BuildError: If cloning the repository's git history fails.
   """
   tmp = pathlib.Path(tempfile.mkdtemp(prefix=".git-clone-", dir=dest.parent))
+  remotes = "remote.origin.fetch=+refs/remotes/origin/*:refs/remotes/github/*"
   try:
-    errors: list[str] = []
-    remotes = "remote.origin.fetch=+refs/remotes/origin/*:refs/remotes/github/*"
-    fetch = [] if local else ["--no-local", "-c", remotes]
-    if (
-        artifacts.git_output(
-            tmp,
-            "clone",
-            "--quiet",
-            "--no-checkout",
-            *fetch,
-            "--",
-            os.path.abspath(src),
-            "repo",
-            errors=errors,
-        )
-        is None
+    full = ["--quiet", *([] if local else ["--no-local", "-c", remotes])]
+    for name, how in (
+        ("full", full),
+        # no file contents: git's partial clone, which a local clone ignores
+        (
+            "staged",
+            [
+                "--no-local",
+                f"--config={remotes}",
+                "--filter=blob:none",
+                "--upload-pack=git -c uploadpack.allowFilter=true upload-pack",
+            ],
+        ),
     ):
-      raise BuildError(
-          "could not copy the repository's git history for the build "
-          f"({errors[0] if errors else 'git clone failed'})"
-      )
-    (tmp / "repo" / ".git").rename(dest / ".git")
+      errors: list[str] = []
+      if (
+          artifacts.git_output(
+              tmp,
+              "clone",
+              "--no-checkout",
+              *how,
+              "--",
+              os.path.abspath(src),
+              name,
+              errors=errors,
+          )
+          is None
+      ):
+        raise BuildError(
+            "could not copy the repository's git history for the build "
+            f"({errors[0] if errors else 'git clone failed'})"
+        )
+    size = _tree_bytes(tmp / "full" / ".git")
+    (tmp / "staged" / ".git").rename(dest / ".git")
   finally:
     shutil.rmtree(tmp, ignore_errors=True)
+  # point the partial clone's remote nowhere, so a missing file's contents are
+  # never fetched, here or in the build container
+  artifacts.git_output(
+      dest, "remote", "set-url", "origin", "/nonexistent/no-file-contents"
+  )
+  listing = artifacts.git_output(src, "ls-tree", "-r", "-z", "HEAD") or b""
+  bundled = []
+  for line in listing.split(b"\0"):
+    meta, _, path = line.partition(b"\t")
+    name = os.fsdecode(path)
+    if meta.split(b" ")[1:2] == [b"blob"] and not (
+        name == spec.ENV_FILE or artifacts.bundle_excluded(name)
+    ):
+      bundled.append(meta.split(b" ")[2] + b"\n")
+  failed = _copy_objects(src, dest, b"".join(bundled))
+  if failed:
+    raise BuildError(
+        f"could not copy the committed files' contents for the build ({failed})"
+    )
   artifacts.git_output(dest, "reset", "--quiet")
-  return _tree_bytes(dest / ".git")
+  return size
+
+
+def _copy_objects(
+    src: pathlib.Path, dest: pathlib.Path, ids: bytes
+) -> str | None:
+  """Copies objects from one repository into another as a single pack.
+
+  The pack is written into `dest`'s git directory and indexed there: given a
+  path in `dest`, `pack-objects` run in `src` writes its pack beside `src` and
+  renames it into place, which fails when the two are on different filesystems
+  (an entry on a data disk, the kit's cache on the root disk).
+
+  Args:
+    src: Repository holding the objects.
+    dest: Repository receiving them.
+    ids: Object names, one a line.
+
+  Returns:
+    None once the objects are copied, else the reason (git's last line).
+  """
+  pack = dest / ".git" / "bundled.pack"
+  quiet = {
+      "stderr": subprocess.PIPE,
+      "env": {**os.environ, **artifacts.GIT_ENV},
+      "timeout": artifacts.GIT_SEC,
+      "check": True,
+  }
+  try:
+    with open(pack, "wb") as out:
+      subprocess.run(
+          ["git", "-C", str(src), "pack-objects", "--quiet", "--stdout"],
+          input=ids,
+          stdout=out,
+          **quiet,
+      )
+    with open(pack, "rb") as data:
+      subprocess.run(
+          ["git", "-C", str(dest), "index-pack", "--stdin"],
+          stdin=data,
+          stdout=subprocess.DEVNULL,
+          **quiet,
+      )
+  except subprocess.CalledProcessError as exc:
+    said = os.fsdecode(exc.stderr or b"").strip().splitlines()
+    return said[-1][-300:] if said else f"git ended with code {exc.returncode}"
+  except (OSError, subprocess.SubprocessError) as exc:
+    return str(exc)[-300:] or type(exc).__name__
+  finally:
+    pack.unlink(missing_ok=True)
+  return None
 
 
 def _check_places(src: pathlib.Path, dest: pathlib.Path) -> None:
@@ -1184,7 +1277,7 @@ def stage(src: pathlib.Path, dest: pathlib.Path) -> Source:
           and exc.errno in (errno.EACCES, errno.EPERM)
       ):
         raise _unreadable(src, rel, why) from None
-      if read:  # a failing drive under the entry, say
+      if read:  # Handle host disk or I/O errors while reading the source file.
         raise BuildError(
             f"{rel} could not be read ({why}): a disk or I/O problem on this"
             " machine, not your harness; fix it, then run again"
@@ -1248,6 +1341,29 @@ def _script(has_install: bool) -> str:
   )
 
 
+def log_tail(log: pathlib.Path, lines: int, size: int = 64 << 10) -> str:
+  """Returns the last `lines` lines of `log` as UTF-8 text, or "".
+
+  Reads only the last `size` bytes, so an install that printed gigabytes costs
+  no more than one that printed a page.
+
+  Args:
+    log: Path to the log file.
+    lines: Number of lines to return, trailing blank lines not counted.
+    size: Bytes read from the end of `log`.
+
+  Returns:
+    The lines joined with newlines, or "" when `log` cannot be read.
+  """
+  try:
+    with log.open("rb") as fh:
+      fh.seek(max(0, fh.seek(0, os.SEEK_END) - size))
+      tail = fh.read().decode("utf-8", errors="replace")
+  except OSError:
+    return ""
+  return "\n".join(tail.rstrip().splitlines()[-lines:])
+
+
 def _docker_failed(rc: int, log: pathlib.Path) -> None:
   """Raises `stack.InfraError` if the builder container failed before `install`.
 
@@ -1269,10 +1385,8 @@ def _docker_failed(rc: int, log: pathlib.Path) -> None:
   try:
     with log.open("rb") as fh:
       head = fh.read(64 << 10).decode("utf-8", errors="replace")
-      fh.seek(max(0, fh.seek(0, os.SEEK_END) - 4096))
-      tail = fh.read().decode("utf-8", errors="replace")
   except OSError:
-    head = tail = ""
+    head = ""
   missing = next(
       (
           line.split(MOUNT_MISSING, 1)[1].strip()
@@ -1287,10 +1401,7 @@ def _docker_failed(rc: int, log: pathlib.Path) -> None:
         f" {SHARING}"
     )
   if BUILDER_STARTED not in head:
-    said = next(
-        (line.strip() for line in reversed(tail.splitlines()) if line.strip()),
-        "",
-    )
+    said = log_tail(log, 1, 4096).strip()
     hint = f"; {SHARING}" if "mount" in said.lower() else ""
     raise stack.InfraError(
         f"Docker could not start the builder container (exit {rc}):"
@@ -1327,6 +1438,9 @@ def build(
   log.write_text("", encoding="utf-8")
   started = time.time()
   image = builder or builder_image(log)[0]
+  # before the scripts' folder exists: it may wait up to 30 s for `docker info`,
+  # and an interrupt there would leave the folder behind
+  resources = limits()
   # in the work directory, which the daemon must be able to mount (SHARING)
   scripts = pathlib.Path(tempfile.mkdtemp(prefix="build-scripts-", dir=work))
   # UTF-8 whatever the locale, as the server writes them: install may hold any
@@ -1352,7 +1466,7 @@ def build(
       f"{stack.LABEL}={name}",
       "--log-driver",
       "none",
-      *limits(),
+      *resources,
       "-v",
       f"{source.path}:/mnt/src:ro,z",
       "-v",
@@ -1579,6 +1693,7 @@ class _Header(tarfile.TarInfo):
   evaluation server's checks.
   """
 
+  # tarfile's hook for each header it reads
   def _proc_member(self, archive):  # pylint: disable=arguments-renamed
     if self.type in (
         tarfile.XHDTYPE,
@@ -1590,7 +1705,6 @@ class _Header(tarfile.TarInfo):
           "it has a pax or sparse header, which the builder's tar does not"
           " write"
       )
-      # tarfile's hook for each header it reads
     if (
         self.type in (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
         and self.size > 4 * MAX_NAME + 1

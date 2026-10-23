@@ -25,10 +25,10 @@ import urllib.parse
 # Served by the organizers on Google Cloud, at their cost: the newest version of
 # each model family.
 GOOGLE_CLOUD = {
-    "claude-opus-5-5": "Claude Opus 5.5",
     "gemini-4-argon": "Gemini 4 Argon",
     "gemini-3.8-flash": "Gemini 3.8 Flash",
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro (preview)",
+    "claude-opus-5-5": "Claude Opus 5.5",
     "gpt-oss-120b": "gpt-oss 120B",
     "qwen3-coder-480b": "Qwen3 Coder 480B A35B",
     "qwen3-next-80b": "Qwen3-Next 80B A3B Instruct",

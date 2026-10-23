@@ -18,3 +18,7 @@ install: >-
   uv venv --python 3.12 /opt/harness/venv
   && uv pip install --python /opt/harness/venv/bin/python -r {src}/requirements.txt
 serve: /opt/harness/venv/bin/python {src}/serve.py
+# 128000 is GPT-6 Astra's maximum output, which its reasoning counts toward. For a model with a smaller limit,
+# lower it or let serve.py lower it when the endpoint answers 400.
+env:
+  MAX_OUTPUT_TOKENS: "128000"

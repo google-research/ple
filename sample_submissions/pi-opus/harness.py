@@ -52,6 +52,18 @@ THINKING = "max"
 # arrives
 STOP_BEFORE_SEC = 90
 CATALOG_TIMEOUT_SEC = 30
+# Pi settings: retry failed requests up to 8 times with exponential backoff
+# from 2 s to 60 s (~4 minutes total, versus Pi's 14 s default), set a 1-hour
+# HTTP idle timeout so long max-effort thinking is not cut off at 5 minutes,
+# and keep `streaming` cache warming so Pi refreshes Claude's prompt cache
+# during long commands.
+SETTINGS = {
+    "defaultProjectTrust": "never",
+    "quietStartup": True,
+    "cacheWarming": "streaming",
+    "retry": {"maxRetries": 8, "baseDelayMs": 2000, "maxAgentDelayMs": 60000},
+    "httpIdleTimeoutMs": 3_600_000,
+}
 # Request features the Google Cloud route for Claude refuses. pi leaves them
 # out, and the Anthropic API works without them too.
 COMPAT = {
@@ -70,6 +82,29 @@ NOTE = (
     " check what you wrote. When you are done, reply with a short summary of"
     " what you delivered and where."
 )
+TIME_NOTE = (
+    " You have about {minutes} minutes in all; leave time to finish the"
+    " deliverables."
+)
+
+
+def note(session: taskbridge.Session) -> str:
+  """Returns the text appended to Pi's system prompt for a task.
+
+  Pi is stopped `STOP_BEFORE_SEC` before the deadline, so the prompt note
+  reports the remaining time available before that cutoff.
+
+  Args:
+    session: Active task session.
+
+  Returns:
+    `NOTE` for the task's workdir, plus `TIME_NOTE` when the task has a limit.
+  """
+  left = session.time_left()
+  text = NOTE.format(workdir=session.workdir)
+  if left is None:
+    return text
+  return text + TIME_NOTE.format(minutes=int(left // 60))
 
 
 def provider() -> tuple[str, dict[str, Any]]:
@@ -151,13 +186,7 @@ def configure(
   if not in_catalog(name, model, env):
     config["models"] = [{"id": model, "name": model, **UNKNOWN_MODEL}]
     models.write_text(json.dumps({"providers": {name: config}}))
-  settings = {
-      "defaultProjectTrust": "never",
-      "quietStartup": True,
-      "cacheWarming": "off",
-      "retry": {"maxRetries": 6, "maxAgentDelayMs": 60000},
-  }
-  (agent_dir / "settings.json").write_text(json.dumps(settings))
+  (agent_dir / "settings.json").write_text(json.dumps(SETTINGS))
   servers = {
       s["name"]: {"url": relay.mcp_url(s["name"]), "timeout": 300}
       for s in session.mcp_servers
@@ -282,7 +311,7 @@ async def solve(session: taskbridge.Session) -> str:
           "--thinking",
           THINKING,
           "--append-system-prompt",
-          NOTE.format(workdir=session.workdir),
+          note(session),
       ]
       run = Run(session, model)
       done = await taskbridge.run_process(

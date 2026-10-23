@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Laid over Harbor's egress-control compose file by kit/harbor_docker.py: the sidecar's gost reads egress-gost.yaml,
-# which waits up to an hour for a response's headers instead of 15 s (that file says why). The path is absolute, from
-# the environment class, because compose resolves a relative one against the task's environment directory.
+# Overlay added by kit/harbor_docker.py when egress control is enabled: mounts
+# egress-gost.yaml over Harbor's default gost config so the sidecar waits up to
+# 1 hour (instead of 15s) for LLM judge response headers.
 services:
   harbor-docker-egress-control-sidecar:
     volumes:

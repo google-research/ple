@@ -7,9 +7,9 @@ see the exact changes from `minimal`.
 
 ## How it works
 
-`agent()` wraps `minimal`'s tool-calling loop as a reusable function that takes
-a message history, a tool list, and a step deadline. `solve()` calls it across
-three stages:
+`agent()` wraps `minimal`'s tool-calling loop (including backoff retries and
+context-overflow trimming) as a reusable function that takes a message history,
+a tool list, and a step deadline. `solve()` calls it across three stages:
 
 1. The planner (`bash`, `read_file`) explores the project files and writes a
    structured plan covering each required deliverable, its path and format, the

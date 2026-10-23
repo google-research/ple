@@ -21,13 +21,16 @@ Runs in its own container with this file mounted:
 
 Acts as an HTTP proxy (`CONNECT` and absolute-URI requests) that connects only
 to allowed `host:port` pairs and only to addresses resolving as public IPs.
+A tunnel to an allowed host must start with a TLS ClientHello whose server
+name (SNI) is that host, because a shared front end routes by that name.
 `--except` specifies private `host:port` endpoints that are permitted, such as
-the evaluator's model server. Request heads (including `CONNECT`) are rejected
-if a server could interpret them ambiguously (bare CR or LF, control characters,
-folded or malformed header lines). Plain HTTP requests are routed to the host
-in the request URL with `Host` rewritten from the URL, unambiguous body framing,
-and strict validation of chunk-size lines and trailers. Outbound connections
-idle for `IDLE_SEC` seconds in both directions are closed.
+the evaluator's model server, whose tunnels are not inspected. Request heads
+(including `CONNECT`) are rejected if a server could interpret them ambiguously
+(bare CR or LF, control characters, folded or malformed header lines). Plain
+HTTP requests are routed to the host in the request URL with `Host` rewritten
+from the URL, unambiguous body framing, and strict validation of chunk-size
+lines and trailers. Outbound connections idle for `IDLE_SEC` seconds in both
+directions are closed.
 
 Also forwards a published port to the serve container's WebSocket using separate
 connection slots. Accepting connections only when a slot is available bounds
@@ -87,6 +90,10 @@ FORBIDDEN_TRAILERS = DROPPED_HEADERS | {
     b"trailer",
     b"upgrade",
 }
+# A refused ClientHello's answer: a fatal TLS alert, unrecognized_name (112).
+TLS_REFUSAL = b"\x15\x03\x03\x00\x02\x02\x70"
+# the characters of a DNS name, as a ClientHello's server name carries it
+_SNI = re.compile(rb"[0-9A-Za-z._-]{1,255}")
 
 
 def normal_host(host: str) -> str:
@@ -571,6 +578,141 @@ async def one_request(
   return up[0], down[0], idled
 
 
+async def read_client_hello(
+    reader: asyncio.StreamReader, raw: bytearray
+) -> bytes | None:
+  """Reads a tunnel's first TLS records, up to one whole handshake message.
+
+  Args:
+    reader: Client stream reader, just past the `CONNECT` head.
+    raw: Collects the bytes read, also when reading stops early.
+
+  Returns:
+    The handshake message the records carry, or None when they are not TLS
+    handshake records (reading stops at the first record header that is not
+    one).
+
+  Raises:
+    asyncio.IncompleteReadError: If the client stream ends first.
+  """
+  message = b""
+  while len(message) < 4 or len(message) < 4 + int.from_bytes(
+      message[1:4], "big"
+  ):
+    header = await reader.readexactly(5)
+    raw += header
+    length = int.from_bytes(header[3:5], "big")
+    # a handshake record of TLS 1.x, at most 2^14 bytes, and the whole hello
+    # within the head limit
+    if (
+        header[:2] != b"\x16\x03"
+        or not 0 < length <= 1 << 14
+        or len(raw) + length > MAX_HEAD_BYTES
+    ):
+      return None
+    fragment = await reader.readexactly(length)
+    raw += fragment
+    message += fragment
+  return message
+
+
+def hello_name(message: bytes | None) -> tuple[str | None, bytes | None]:
+  """Reads the one server name (SNI) a TLS ClientHello carries.
+
+  Args:
+    message: The handshake message from `read_client_hello`, or None.
+
+  Returns:
+    (None, the name) for a ClientHello with exactly one server name; otherwise
+    (why it names none clearly, None).
+  """
+  malformed = "the tunnel did not start with a TLS ClientHello"
+  unclear = "the TLS ClientHello names more than one server, or none clearly"
+  if message is None or len(message) < 4 or message[0] != 1:
+    return malformed, None
+  size = int.from_bytes(message[1:4], "big")
+  body = message[4:]
+  # past the version and random: the session id, cipher suites and compression
+  # methods, each after its length
+  at = 34
+  for width in (1, 2, 1):
+    if at + width > len(body):
+      return malformed, None
+    at += width + int.from_bytes(body[at : at + width], "big")
+  if len(body) != size or at > len(body):
+    return malformed, None
+  if at == len(body):  # no extensions at all
+    return "the TLS ClientHello names no server (SNI)", None
+  if at + 2 + int.from_bytes(body[at : at + 2], "big") != len(body):
+    return malformed, None
+  at, names = at + 2, []
+  while at < len(body):
+    kind = int.from_bytes(body[at : at + 2], "big")
+    end = at + 4 + int.from_bytes(body[at + 2 : at + 4], "big")
+    if end > len(body):
+      return malformed, None
+    if kind == 0xFE0D:  # encrypted_client_hello
+      return (
+          "the TLS ClientHello asks for Encrypted Client Hello, which hides"
+          " the server's name"
+      ), None
+    if kind == 0:  # server_name
+      names.append(body[at + 4 : end])
+    at = end
+  if not names:
+    return "the TLS ClientHello names no server (SNI)", None
+  # the server_name list: its length, then each name's type, length and name
+  data, entries, at = names[0], [], 2
+  if len(names) > 1 or int.from_bytes(data[:2], "big") != len(data) - 2:
+    return unclear, None
+  while at + 3 <= len(data):
+    end = at + 3 + int.from_bytes(data[at + 1 : at + 3], "big")
+    entries.append((data[at], data[at + 3 : end]))
+    at = end
+  if at != len(data) or len(entries) != 1 or entries[0][0] != 0:
+    return unclear, None
+  return None, entries[0][1]
+
+
+def sni_problem(message: bytes | None, host: str) -> str | None:
+  """Checks that a TLS handshake message is a ClientHello naming `host`.
+
+  A shared front end routes a TLS connection by its server name (SNI), so a
+  tunnel to the model's host carrying another name, none, or a hidden one
+  (Encrypted Client Hello) could reach any site that front end serves.
+
+  Args:
+    message: The handshake message from `read_client_hello`, or None.
+    host: The normalized `CONNECT` host.
+
+  Returns:
+    None when `message` is a ClientHello with exactly one server name, `host`;
+    otherwise why the tunnel is refused.
+  """
+  problem, name = hello_name(message)
+  if problem:
+    return problem
+  if not _SNI.fullmatch(name):
+    return "the TLS ClientHello names a server that is no DNS name"
+  # normalized as normal_host does
+  if name.decode("ascii").lower().rstrip(".") != host:
+    return f"the TLS ClientHello names {name.decode('ascii')}, not {host}"
+  return None
+
+
+def logged_name(message: bytes | None) -> str | None:
+  """Returns the server name a tunnel's ClientHello carries, for the log.
+
+  Args:
+    message: The handshake message from `read_client_hello`, or None.
+
+  Returns:
+    The name alone, as text, or None when there is none clearly.
+  """
+  name = hello_name(message)[1]
+  return name.decode("ascii", "replace")[:255] if name is not None else None
+
+
 def _refuse(writer: asyncio.StreamWriter, status: str, reason: str) -> None:
   """Writes a plain-text HTTP error response to `writer`.
 
@@ -635,7 +777,7 @@ async def listen(
     await slots.acquire()
     try:
       conn, _ = await loop.sock_accept(sock)
-    # out of file descriptors, say: wait and accept again
+    # If accept fails transiently (e.g. EMFILE), wait briefly and retry.
     except OSError as exc:
       slots.release()
       log(kind="error", error=f"accept: {exc}")
@@ -768,6 +910,39 @@ class Proxy:
     else:
       _refuse(writer, "502 Bad Gateway", f"could not connect to {host}:{port}")
       return
+    hello, sni = bytearray(), None
+    if path is None:
+      writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+      await writer.drain()
+      if (host, port) not in self.policy.exceptions:
+        # an allowed host's tunnel goes on only once its TLS ClientHello names
+        # that host; the evaluator's model server speaks plain HTTP
+        message = None
+        try:
+          message = await asyncio.wait_for(
+              read_client_hello(reader, hello), HEAD_TIMEOUT_SEC
+          )
+          problem = sni_problem(message, host)
+        except asyncio.TimeoutError:
+          problem = f"no TLS ClientHello within {HEAD_TIMEOUT_SEC} s"
+        except asyncio.IncompleteReadError:
+          problem = "the tunnel ended before a TLS ClientHello"
+        sni = logged_name(message)
+        if problem:
+          log(
+              kind="refused",
+              method=method,
+              host=host,
+              port=port,
+              reason=problem,
+              **({"sni": sni} if sni else {}),
+          )
+          if hello.startswith(b"\x16"):
+            writer.write(TLS_REFUSAL)
+          else:
+            _refuse(writer, "403 Forbidden", f"egress refused: {problem}")
+          up_writer.close()
+          return
     log(
         kind="allowed",
         method=method,
@@ -775,15 +950,14 @@ class Proxy:
         port=port,
         address=address,
         reason=reason,
+        **({"sni": sni} if sni else {}),
     )
     if path is None:
-      # a tunnel's bytes (TLS, usually) are not inspected: the CONNECT host is
-      # all the proxy checks
-      writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-      await writer.drain()
+      up_writer.write(bytes(hello))
       sent, received, idled = await splice(
           reader, writer, up_reader, up_writer, self.idle
       )
+      sent += len(hello)
     else:
       up_writer.write(up_head)
       sent, received, idled = await one_request(

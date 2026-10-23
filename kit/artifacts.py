@@ -204,7 +204,7 @@ def covered(deliverables: Iterable[str], path: str) -> bool:
 
 
 def load_dev_set(path: str | pathlib.Path) -> dict[str, DevTask]:
-  """eval/dev_set.yaml's tasks, by id."""
+  """Loads the dev-set tasks from `eval/dev_set.yaml` keyed by task ID."""
   data = yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8")) or {}
   out = {}
   for t in data.get("tasks") or []:
@@ -220,10 +220,11 @@ def load_dev_set(path: str | pathlib.Path) -> dict[str, DevTask]:
 
 
 def dev_set_digest(path: str | pathlib.Path) -> str:
-  """Computes the SHA-256 hex digest of the dev-set file with LF line endings.
+  """Computes the SHA-256 hex digest of the dev set's data.
 
-  Normalizes CRLF to LF so a Windows checkout produces the same digest as the
-  server's copy.
+  Hashes the parsed YAML as canonical JSON, so comments (a license header),
+  layout and line endings do not count: a public or Windows checkout produces
+  the same digest as the server's copy of the same dev set.
 
   Args:
     path: Path to the `dev_set.yaml` file.
@@ -231,9 +232,12 @@ def dev_set_digest(path: str | pathlib.Path) -> str:
   Returns:
     The lowercase hexadecimal SHA-256 digest string.
   """
-  return hashlib.sha256(
-      pathlib.Path(path).read_bytes().replace(b"\r\n", b"\n")
-  ).hexdigest()
+  data = yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8"))
+  canonical = json.dumps(
+      data, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+      default=str,
+  )
+  return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def bundle_excluded(rel: str) -> bool:
@@ -299,13 +303,13 @@ def lstat(path: str | pathlib.Path) -> os.stat_result | None:
 
 
 def is_folder(path: str | pathlib.Path) -> bool:
-  """A folder, never a link to one."""
+  """Returns whether `path` is a directory (not a symlink)."""
   st = lstat(path)
   return st is not None and stat.S_ISDIR(st.st_mode)
 
 
 def is_regular(path: str | pathlib.Path) -> bool:
-  """A regular file, never a link to one."""
+  """Returns whether `path` is a regular file (not a symlink)."""
   st = lstat(path)
   return st is not None and stat.S_ISREG(st.st_mode)
 
@@ -394,27 +398,25 @@ def regular_files(top: pathlib.Path) -> Iterator[pathlib.Path]:
 
 @dataclasses.dataclass(frozen=True)
 class Entry:
-  """One path of a repository as git records it.
+  """Represents a single repository path entry inspected during artifact review.
 
-  `mode` is git's (100644, 100755, 120000 for a link, 160000 for a submodule),
-  "tree" for a folder found on disk, or "special" for a device, FIFO, socket or
-  unreadable entry found on disk; `sha` is git's object id when known.
+  `mode` is the Git mode string (`"100644"`, `"100755"`, `"120000"` for a
+  symlink, `"160000"` for a submodule), `"tree"` for an on-disk directory, or
+  `"special"` for a device, FIFO, socket, or unreadable entry; `sha` is the Git
+  blob or commit object ID when known.
   """
 
   path: str
   mode: str
   size: int | None = None
   sha: str | None = None
-  # a Git LFS pointer in place of the file (known only where the content was
-  # read)
+  # True when the file content is a Git LFS pointer.
   lfs: bool = False
-  # git ignores it, so a commit would not hold it (known only from a working
-  # tree)
+  # True when Git ignores the path in the working tree.
   ignored: bool = False
-  # the index holds other content although git sees no change (a working tree
-  # only)
+  # True when the Git index holds different content from the working tree.
   stale: bool = False
-  # why this machine could not read it (a working tree only); see _blocking
+  # Non-empty reason when the entry could not be read on disk (see _blocking).
   unreadable: str = ""
 
   @property
@@ -783,22 +785,31 @@ def index_state(
     )
   else:
     heads = b""
-  pointer_ids, rest = set(), heads or b""
-  while rest:  # "<id> <type> <size>\n<content>\n", one after another
-    line, _, rest = rest.partition(b"\n")
-    w = line.split()
+  # "<id> <type> <size>\n<content>\n", one after another, read in place: cutting
+  # each one off would copy the rest of the output every time
+  pointer_ids, heads, at = set(), heads or b"", 0
+  while at < len(heads):
+    end = heads.find(b"\n", at)
+    w = heads[at:end].split() if end >= 0 else []
     if len(w) != 3 or not w[2].isdigit():
       break
     n = int(w[2])
-    if rest[:n].startswith(LFS_POINTER):
+    if heads.startswith(LFS_POINTER, end + 1, end + 1 + n):
       pointer_ids.add(w[0].decode())
-    rest = rest[n + 1 :]
+    at = end + 1 + n + 1
   return {p for p, sha in clean.items() if sha in pointer_ids}, behind, modes
 
 
 # what one git command of the kit may take (the listing of a large repository
 # included)
 GIT_SEC = 300
+# every git the kit runs: the C locale, no prompts, no optional locks
+GIT_ENV = {
+    "LC_ALL": "C",
+    "LANGUAGE": "C",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_OPTIONAL_LOCKS": "0",
+}
 
 
 class GitSaid(str):
@@ -849,13 +860,7 @@ def git_output(
         input=data,
         capture_output=True,
         timeout=timeout,
-        env={
-            **os.environ,
-            "LC_ALL": "C",
-            "LANGUAGE": "C",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_OPTIONAL_LOCKS": "0",
-        },
+        env={**os.environ, **GIT_ENV},
         check=False,
     )
   except subprocess.TimeoutExpired:
@@ -1155,7 +1160,7 @@ def read_regular(path: pathlib.Path, cap: int) -> bytes | None:
 
 
 def _ignored(git: Callable[..., bytes | None], paths: list[str]) -> set[str]:
-  """The paths git ignores (a tracked file is never ignored)."""
+  """Returns the subset of `paths` ignored by Git."""
   if not paths:
     return set()
   data = b"\x00".join(os.fsencode(p) for p in paths) + b"\x00"
@@ -1506,8 +1511,8 @@ class Review:
     }
 
   def lines(self) -> list[str]:
-    """The review as text, the way `kit artifacts` prints it."""
-    # nothing was reviewed: no count of tasks, which would read as a verdict
+    """Formats the artifact review as human-readable text lines."""
+    # Omit task counts when the review stopped on an unreadable path.
     if self.unreadable:
       return (
           ["the kit cannot review the artifacts on this machine:"]
@@ -1540,6 +1545,11 @@ def _top(path: str) -> str:
 
 
 NO_FOLDER = f"no {ROOT}/ folder"
+# review() refuses a submission with no usable task, and materialize() one whose
+# usable tasks it refused once their files were read
+NONE_USABLE = (
+    "no dev task in {}/ has usable artifacts (see each task's reasons)"
+)
 NO_ARTIFACTS = (
     f"{NO_FOLDER}: run `uv run python eval/run.py <your entry>`, which writes"
     " it, then commit it (docs/artifacts.md)"
@@ -1734,8 +1744,8 @@ def task_for(name: str, dev: dict[str, DevTask]) -> tuple[str | None, str]:
   """Resolves the dev task a folder name stands for and how it was matched.
 
   A trial folder's name is the task's and one suffix
-  (`jobshop-scheduler__a1B2c3D`), taken off once, at the last `"__"`; a name
-  over `MAX_NAME_BYTES` stands for no task.
+  (`data-center-site-model__a1B2c3D`), taken off once, at the last `"__"`; a
+  name over `MAX_NAME_BYTES` stands for no task.
 
   Args:
     name: Folder name to match.
@@ -2066,6 +2076,13 @@ def _review_task(
     r.status = EMPTY
     r.problems.append(
         f"nothing to grade: no file under {FILES}/ and no {FINAL_MESSAGE}"
+    )
+  # a final message alone scores 0 with a grader that reads only files
+  elif not r.files and not task.final_message:
+    r.status = EMPTY
+    r.problems.append(
+        f"nothing this task's grader reads: no file under {FILES}/ (its grader"
+        f" does not read {FINAL_MESSAGE})"
     )
   else:
     r.status = OK
@@ -2910,6 +2927,7 @@ def _manifest(
   elif harness_digest and recorded:
     prov["harness"] = "same"
   older = []
+  same_dev_set = prov["dev_set"] == "same"
   for tid, r in rv.tasks.items():
     t = m["tasks"].get(tid)
     if r.status == MISSING:
@@ -2917,6 +2935,16 @@ def _manifest(
     if not isinstance(t, dict):
       r.warnings.append(f"not in {MANIFEST}")
       continue
+    # a task kept from an earlier run on another dev set, under a manifest that
+    # a later partial run on this dev set wrote (the manifest's top-level dev
+    # set is the last run's)
+    if same_dev_set and t.get("dev_set", dev_digest) != dev_digest:
+      prov["dev_set"] = "other"
+      r.warnings.append(
+          "made with another version of the dev set: run this task again"
+          " (`eval/run.py --tasks <id>`) with the competition repository's"
+          " current eval/dev_set.yaml"
+      )
     tree = t.get("tree")
     # a task kept from a run of an earlier version of the harness: its run's
     # tree is not the last run's (checked whenever the last run's harness is the
@@ -3266,9 +3294,7 @@ def _review(
     current_files = harness_files(listed)
   _manifest(rv, root_files, read, dev_digest, harness_digest, current_files)
   if not rv.usable:
-    rv.problems.append(
-        f"no dev task in {root}/ has usable artifacts (see each task's reasons)"
-    )
+    rv.problems.append(NONE_USABLE.format(root))
   return rv
 
 
@@ -3381,8 +3407,8 @@ def materialize(
         sink = open(target, "wb")
       except OSError as exc:
         if exc.errno not in NAME_ERRNOS:
-          raise  # a full disk, say: this machine's fault, not the artifacts'
-        # the task is refused here, with the reason, and the other tasks go on
+          raise  # Re-raise host filesystem errors (e.g. disk full).
+        # Refuse only this task when a filename cannot be created on this OS.
         why = exc.strerror or type(exc).__name__
         problems.append(
             f"{_clip(where)} cannot be written on this machine ({why})"
@@ -3464,10 +3490,7 @@ def materialize(
         encoding="utf-8",
     )
   if rv.accepted and not rv.usable:
-    rv.problems.append(
-        f"no dev task in {rv.root}/ has usable artifacts (see each task's"
-        " reasons)"
-    )
+    rv.problems.append(NONE_USABLE.format(rv.root))
   _printable_messages(rv)
   return rv
 

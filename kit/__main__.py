@@ -182,19 +182,15 @@ def cmd_up(a) -> int:
     build is interrupted).
   """
   sub = spec.load(a.dir)
-  # check the .env and the model server before building, so a problem shows up
-  # in seconds
-  rt = check.runtime(
-      sub,
-      check.entry_env(pathlib.Path(a.dir)),
-      {**os.environ, **check.read_env_file(a.env_file)},
-      a.model_base_url,
-  )
+  # Validate .env and model server settings before building so configuration
+  # errors fail immediately.
+  dotenv = check.entry_env(pathlib.Path(a.dir))
+  values = {**os.environ, **check.read_env_file(a.env_file)}
+  rt = check.runtime(sub, dotenv, values, a.model_base_url)
   for note in rt.notes:
     print(f"warning: {note}", flush=True)
-  # On Ctrl-C, `kill` or a closed terminal, build.build removes the builder
-  # container, Stack.start removes a stack it had half started, and the finally
-  # below stops a running one.
+  # On SIGINT, SIGTERM, or SIGHUP, clean up any active builder container or
+  # running server stack.
   with check.stops_on_signals():
     try:
       _, image, _ = _build(a, sub)
@@ -204,10 +200,12 @@ def cmd_up(a) -> int:
     check.sweep_leftovers()
     run = f"up-{uuid.uuid4().hex[:12]}"
     st = stack.Stack(keep=True, run=run)
-    # a later kit run removes the stack if this process is killed
+    # Register the stack so a subsequent kit run can sweep it if this process is
+    # killed.
     registration = check.register_up(run)
     try:
-      # docker reads it once, as it creates the container
+      # Pass environment variables via a temporary file read when Docker creates
+      # the container.
       with check.private_env_file(rt.env) as env_file:
         st.start(
             image=image,
@@ -221,7 +219,13 @@ def cmd_up(a) -> int:
           f" {st.serve}; Ctrl-C stops it)",
           flush=True,
       )
-      print(_until_stopped(st, sub.name), flush=True)
+      # Redact any secret values that might appear in the server's log output.
+      print(
+          check.scrub(
+              _until_stopped(st, sub.name), check.secret_values(dotenv, values)
+          ),
+          flush=True,
+      )
       return 1
     except KeyboardInterrupt:
       pass
@@ -248,7 +252,8 @@ def _until_stopped(st: stack.Stack, name: str) -> str:
       f"its egress proxy {st.egress}, which carries {st.url} and the server's"
       " connections out,"
   )
-  # since when Docker has not answered, and whether kit up said so
+  # Track when Docker stopped responding and whether a warning was already
+  # printed.
   silent, said = None, False
   while True:
     answered = True
@@ -319,7 +324,8 @@ def cmd_artifacts(a) -> int:
     would reject them.
   """
   entry = pathlib.Path(a.dir).resolve()
-  # --json keeps standard output to the review alone
+  # With --json, direct informational messages to stderr so stdout contains only
+  # JSON.
   said = sys.stderr if a.json else sys.stdout
   if a.source:
     try:
@@ -333,8 +339,8 @@ def cmd_artifacts(a) -> int:
     rv = artifacts.review_directory(
         entry, artifacts.load_dev_set(artifacts.DEV_SET_FILE)
     )
-  # the entry itself cannot be listed; the review reports unreadable files
-  # inside
+  # Top-level directory cannot be listed (unreadable inner files are reported in
+  # the review).
   except OSError as exc:
     print(
         f"could not read {exc.filename or entry}: {exc.strerror or exc}",

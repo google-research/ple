@@ -1,41 +1,40 @@
 # Physical-Engineering’s Last Exam
 
-**Physical-Engineering’s Last Exam (PLE)** is a benchmark of real-world engineering work. Each task asks for a deliverable an engineer produces on a project: a calculation package, a design review, a drawing, or a technical memo. Domain experts reviewed every task, grading rubric, and automated check.
+<p align="center">
+  <a href="https://arxiv.org/abs/2610.30537"><img src="https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white" alt="PLE-Bench paper on arXiv"></a>
+  <a href="https://ple-bench.com"><img src="https://img.shields.io/badge/Website-PLE--Bench-009FDB?style=for-the-badge" alt="PLE-Bench competition and leaderboard website"></a>
+  <a href="https://huggingface.co/datasets/physical-engineerings-last-exam/physical-engineerings-last-exam"><img src="https://img.shields.io/badge/Hugging_Face-PLE--Bench-FFD21E?style=for-the-badge&logo=huggingface&logoColor=FFD21E" alt="PLE-Bench dataset on Hugging Face"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-2EA44F?style=for-the-badge" alt="Licensed under the Apache 2.0 license"></a>
+</p>
 
-In the PLE harness competition, you enter with a **harness** (the server that drives a model through each task), the **model** it calls, and the **`artifacts/`** it produced on the public dev set. For each submission, we:
+**Physical-Engineering’s Last Exam (PLE)** is an 85-task benchmark of
+real-world engineering work across structural, civil, electrical, and
+mechanical engineering. Each task runs in an isolated container and asks for a
+project deliverable—a calculation package, design review, drawing, or technical
+memo—graded from `0` to `1` by automated checks, an LLM rubric judge, or both.
+
+In the [PLE competition](https://ple-bench.com), you submit a GitHub commit containing your **harness** (the server that drives a model through each task), the **model** it calls, and the **`artifacts/`** it produced on the **29 public dev tasks** ([dataset](https://huggingface.co/datasets/physical-engineerings-last-exam/physical-engineerings-last-exam)). For each submission, we:
 
 1. **Grade your committed `artifacts/`** to compute your dev score.
-2. **Run your harness live** on a sample of dev tasks to verify that your dev score reproduces.
-3. **Evaluate your harness on the hidden test set**, which determines your leaderboard rank.
-
-This repository provides everything you need to build, test, and score an entry locally:
-
-- [`sample_submissions/`](sample_submissions/): eight working starter entries
-- [`kit/`](kit/): `python -m kit check` validates, builds, and smoke-tests your harness the way the evaluation server does
-- [`eval/`](eval/): `python eval/run.py` runs the dev set, grades the results, and exports `artifacts/`
+2. **Run your harness live** on a sample of dev tasks to verify that your dev
+   score reproduces.
+3. **Run your harness three times on the 56 hidden test tasks**; the mean of the three runs is your test score, and the leaderboard ranks participants by their best test score ([rules and scoring](docs/rules.md)).
 
 ## Quick start
-
-**Prerequisites:**
-
-- Linux, macOS, or Windows with WSL 2
-- Git, Python 3.10+, and [uv](https://docs.astral.sh/uv/)
-- A running Docker daemon with sufficient disk, CPU, and memory ([`eval/README.md`](eval/README.md#before-you-run))
-- Internet access to Hugging Face for the dev-set tasks (set `HF_TOKEN` while the dataset is private)
-- An OpenAI API key for `custom-openai` below (whose model also serves as the local judge), or the local proxy setup in [Models](#models) if you start from [`minimal`](sample_submissions/minimal/) with a Google-sponsored model
-
-> **Note:** Containers run as `linux/amd64` to match the evaluation server. On Apple Silicon, Docker emulates `amd64`, which runs slower and can affect timed verifiers ([Time and cost](eval/README.md#time-and-cost)).
 
 ```bash
 # 1. Install Harbor (runs the dev tasks; the kit's agent needs websockets)
 uv tool install harbor==0.20.0 --with websockets
 
 # 2. Copy a starter entry into its own Git repository outside this clone
-cp -r sample_submissions/custom-openai ../my-harness
+cp -r sample_submissions/pi-opus ../my-harness
 git -C ../my-harness init -q
 
-# 3. Add your OpenAI API key to ../my-harness/.env
-cp ../my-harness/.env.example ../my-harness/.env
+# 3. Start the local proxy for the google-cloud models (billed to your Google Cloud project)
+gcloud auth application-default login
+export VERTEXAI_PROJECT=<your-gcp-project> MODEL_PROXY_KEY=$(openssl rand -hex 24)
+kit/model_proxy/start.sh &
+export MODEL_PROXY_URL=http://localhost:4000
 
 # 4. Build, start, test the model, and run the smoke and MCP checks
 uv run python -m kit check ../my-harness
@@ -44,28 +43,27 @@ uv run python -m kit check ../my-harness
 uv run python eval/run.py ../my-harness
 ```
 
-Keep your entry in its own Git repository outside this clone: this repository's `.gitignore` excludes `.env`, and `kit check` requires your entry to sit at the root of its own repository.
+See [`kit/README.md`](kit/README.md) for local checks and container limits, and
+[`eval/README.md`](eval/README.md) for dev-set evaluation options and the full
+list of dev tasks.
 
 ## Before you submit
 
-See [`docs/artifacts.md`](docs/artifacts.md#check-before-you-submit) for details on each check:
-
-1. **Validate exported artifacts:** Run `uv run python -m kit artifacts ../my-harness` and confirm there are no `REFUSED` lines (ideally `artifacts/: 30 of 30 dev tasks usable`; any dev task without usable artifacts scores `0`).
-2. **Optional offline regrade:** Run `uv run python eval/run.py --artifacts ../my-harness` to grade `artifacts/` directly without re-running your harness.
-3. **Commit all files**, including `artifacts/` and `.env`:
+1. **Commit your harness and `artifacts/`** (if your global gitignore excludes
+   `.env`, add it with `git -C ../my-harness add -f .env`):
    ```bash
    git -C ../my-harness add -A && git -C ../my-harness commit -m "harness and dev artifacts"
    ```
-   If your global gitignore excludes `.env`, force-add it with `git -C ../my-harness add -f .env`.
-4. **Run the final readiness check:** Run `uv run python -m kit check ../my-harness` and confirm it finishes with `ready to submit`.
-5. **Push to GitHub:** Push the commit to a GitHub repository owned by your personal account. Any repository with a `.env` file must be private and have the competition's GitHub App installed (linked on the competition site).
-6. **Submit:** Submit the commit on the competition site.
+2. **Run the readiness check** and confirm it finishes with `ready to submit` (see [`docs/artifacts.md`](docs/artifacts.md) for artifact validation and offline regrading with `eval/run.py --artifacts`):
+   ```bash
+   uv run python -m kit check ../my-harness
+   ```
+3. **Push and submit:** Push the commit to a GitHub repository owned by your personal account (private with the competition's GitHub App installed if it contains `.env`), [register](https://ple-bench.com/competition/register), and submit on the [competition site](https://ple-bench.com).
 
 ## How an entry runs
 
-An entry is a single commit in a GitHub repository containing `submission.yaml`, your harness code, the exported `artifacts/`, and an optional `.env` file at its root ([`kit/README.md`](kit/README.md#what-you-submit)).
-
-Your harness runs as a WebSocket server in its own container alongside an isolated task container:
+Your harness runs as a WebSocket server in its own container alongside an
+isolated task container:
 
 ```
  your server (serve.py)  <---- websocket ---->  evaluator  ---- runs your requests ---->  task container
@@ -73,33 +71,11 @@ Your harness runs as a WebSocket server in its own container alongside an isolat
          +---- egress proxy ----> your model's API, and no other host                      no network)
 ```
 
-For each task, the evaluator sends the task prompt over the WebSocket, and your harness interacts with the task container through a small JSON protocol: run a shell command, read or write a file, or call one of the task's local MCP servers. See [`kit/README.md`](kit/README.md) for the container contract and [`docs/protocol.md`](docs/protocol.md) for the WebSocket protocol.
+For each task (up to 6 hours), the evaluator sends the task prompt over the WebSocket, and your harness interacts with the task container via a small JSON protocol: run a shell command, read or write a file, or call one of the task's local MCP servers (documents, spreadsheets, email, CAD). See [`kit/README.md`](kit/README.md) for the container contract and [`docs/protocol.md`](docs/protocol.md) for the WebSocket protocol.
 
 ## Models
 
-Your harness can use any of the thirteen Google-sponsored `google-cloud/<id>` models, a commercial model with your own API key, or a self-hosted model server. [`docs/models.md`](docs/models.md) lists all supported configurations and the environment variables passed to your container.
-
-- **Google-sponsored models:** Run free of charge on the evaluation server. To run the dev set locally with a `google-cloud/<id>` model, point `kit/model_proxy` at your own Vertex AI project (billed to that project) or use another proxy that serves the same model names ([setup instructions](docs/models.md#running-google-cloud-models-on-your-machine)).
-- **Self-hosted models:** To serve a model from your own GPUs to the evaluation server, see [`docs/local-models.md`](docs/local-models.md).
-
-## Scoring
-
-Each task is scored from `0` to `1`. Your submission's test score is the mean across all **37 hidden test tasks** (any task without a grade scores `0`).
-
-Each scored submission runs once on the hidden test set, and the leaderboard ranks participants by their best test score. Your dev score and reproduction check are shown for reference and do not affect your leaderboard rank. Full details are in [`docs/rules.md`](docs/rules.md).
-
-## The benchmark
-
-| Discipline | Tasks | Typical deliverables |
-|---|--:|---|
-| Structural engineering | 10 | Gravity, wind, and seismic load checks, member and connection checks, seismic design bases, drawing revisions from review comments |
-| Civil engineering | 15 | Settlement and bearing capacity checks, foundation strategy, site and pipeline layout, construction sequencing and temporary works, cost estimates and fee positions |
-| Electrical engineering | 25 | Load and capacity calculations, plan-review responses, energization checks, cable sizing, specifications, drawing records |
-| Mechanical engineering | 17 | Cooling and controls, clash-free MEP routing, equipment equivalency, storage-tank service life, fire-test validation |
-
-Each task runs inside an isolated Linux container preloaded with the project's files and no internet access. Where needed, tasks also run local MCP tool servers (documents, spreadsheets, email, CAD). The harness writes its deliverable files to disk, finishes with a final message, and has up to 6 hours per task. Tasks are graded by automated checks, an LLM rubric judge, or both.
-
-The **30 public dev tasks** are downloaded automatically from Hugging Face by `eval/run.py` ([`eval/README.md`](eval/README.md#the-dev-set)); the remaining **37 tasks** form the hidden test set, and the full benchmark covers all **67 tasks**.
+Set `model_api` in `submission.yaml` to use any of the 13 Google-sponsored `google-cloud/<id>` models (free on the evaluation server; run locally via [`kit/model_proxy`](docs/models.md#running-google-cloud-models-on-your-machine)), a commercial model with your own API key in `.env`, or a [self-hosted model server](docs/local-models.md). See [`docs/models.md`](docs/models.md) for all supported configurations and runtime environment variables.
 
 ## Sample submissions
 
@@ -107,28 +83,36 @@ The **30 public dev tasks** are downloaded automatically from Hugging Face by `e
 
 - **Compact custom starters:** [`minimal`](sample_submissions/minimal/), [`plan-verify`](sample_submissions/plan-verify/), and [`node-protocol`](sample_submissions/node-protocol/) (Node.js)
 - **Full-featured custom harnesses:** [`custom-openai`](sample_submissions/custom-openai/) and [`local-model`](sample_submissions/local-model/) (for self-hosted endpoints)
-- **Adapters for existing agents:** [`hermes-opus`](sample_submissions/hermes-opus/) (Hermes Agent), [`pi-opus`](sample_submissions/pi-opus/) (Pi), and [`agy-gemini`](sample_submissions/agy-gemini/) (Antigravity CLI)
+- **Adapters for existing agents:** [`hermes-opus`](sample_submissions/hermes-opus/) (Hermes Agent), [`pi-opus`](sample_submissions/pi-opus/) (Pi), and
+  [`agy-gemini`](sample_submissions/agy-gemini/) (Antigravity CLI)
 
-## Repository layout
+## The benchmark
 
-```
-README.md
-docs/
-  protocol.md            WebSocket protocol: messages, limits, timeouts, and fault handling
-  models.md              model_api options, runtime environment variables, and local proxy setup
-  local-models.md        serving a self-hosted model from your own GPUs
-  artifacts.md           artifacts/ layout, validation rules, and pre-submission checks
-  rules.md               competition rules, scoring, reproduction checks, and fair play
-kit/                     python -m kit: validate, build, and test an entry locally
-  README.md              container contract, resource limits, and CLI commands
-  model_proxy/           LiteLLM proxy for running google-cloud models via Vertex AI
-  builder/Dockerfile     base image used to build and run harnesses
-eval/                    python eval/run.py: run and grade the dev set
-  dev_set.yaml           dev-set task list, deliverables, standalone timeouts, and dataset revision
-sample_submissions/      eight working starter entries (see sample_submissions/README.md)
-  taskbridge.py          Python helper implementing the WebSocket protocol and local subprocess relay
-  minimal/  plan-verify/  node-protocol/  custom-openai/  local-model/
-  hermes-opus/  pi-opus/  agy-gemini/
+| Discipline | Tasks | Typical deliverables |
+|---|--:|---|
+| Structural engineering | 10 | Gravity, wind, and seismic load checks, member and connection checks, seismic design bases, drawing revisions from review comments |
+| Civil engineering | 18 | Settlement and bearing capacity checks, foundation strategy, site layout, grading and drainage, construction sequencing and temporary works, cost estimates and fee positions |
+| Electrical engineering | 27 | Load and capacity calculations, plan-review responses, energization checks, cable sizing, specifications, drawing records |
+| Mechanical engineering | 30 | Cooling and controls, clash-free MEP routing, equipment equivalency, storage-tank service life, fire-test validation |
+
+## Citation
+
+If you use PLE in your research, please cite the
+[paper](https://arxiv.org/abs/2610.30537):
+
+```bibtex
+@misc{han2026ple,
+  title         = {{PLE}: Physical-Engineering's Last Exam},
+  author        = {Rujun Han and Yufan Zhuang and Arijit Ray and Han Yu and
+                   Zoey CuiZhu and George Lee and Yifei Ming and Binz Roy and
+                   Varun Sakalkar and Vishy Tirumalashetty and Burak Gokturk and
+                   Tomas Pfister and Chen-Yu Lee},
+  year          = {2026},
+  eprint        = {2610.30537},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url           = {https://arxiv.org/abs/2610.30537}
+}
 ```
 
 ## License

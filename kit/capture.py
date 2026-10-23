@@ -649,7 +649,10 @@ def remove(path: pathlib.Path) -> None:
 
 
 def write_text(path: pathlib.Path, text: str) -> None:
-  """Atomically replaces any file or symlink at `path` with UTF-8 `text`.
+  """Replaces any file or symlink at `path` with UTF-8 `text`, never via a link.
+
+  Not atomic: a write that fails leaves a partial file (the capture then
+  records the error, and a partial `capture.json` reads as none).
 
   Args:
     path: Target file path.

@@ -3,7 +3,7 @@
 An entry with `model_api: openai-compatible/<model>` calls a model server you
 run at the `model_base_url` in `submission.yaml`. Our evaluation server calls
 that URL over the internet from Google Cloud for the smoke test, the dev
-reproduction check, and the test set.
+reproduction check, and three runs of the test set.
 
 A clean way to expose a model on your own GPUs is to start the model server on `127.0.0.1`, put a small auth gate in front of it that checks your key, and publish the gate under a public HTTPS name. [`sample_submissions/local-model/`](../sample_submissions/local-model/) is a complete entry set up this way, with the gate and tunnel configs in its `host/` folder.
 
@@ -27,8 +27,8 @@ The kit and the evaluation server enforce these rules:
 ## What the endpoint has to handle
 
 - Tool calls in both streamed and non-streamed responses (the `local-model` sample streams every call).
-- About 12 tasks at once, each with one model call in flight.
-- Continuous uptime from the moment you submit: the submission waits in the queue and then runs for up to a day (each task allows 6 hours). Errors and timeouts from your endpoint count against your run ([Scoring](rules.md#scoring)).
+- About 36 tasks at once (three test runs of 12 tasks, run together), each with one model call in flight.
+- Continuous uptime from the moment you submit: the submission waits in the queue, then its evaluation takes about a day, and up to about three days if your harness uses most of the 6 hours on many tasks. Errors and timeouts from your endpoint count against your score ([Scoring](rules.md#scoring)).
 - The test set's prompts and files. Turn off request logging on the model server and anything in front of it, and never store task content ([Fair play](rules.md#fair-play)).
 
 ## 1. Start the model server
@@ -42,7 +42,7 @@ vllm serve openai/gpt-oss-120b --served-model-name gpt-oss-120b --host 127.0.0.1
 ```
 
 On a single 80 GB GPU, vLLM 0.29.0 starts `gpt-oss-120b` with default settings,
-but only has room for about 180,000 tokens of KV cache, so 12 long sessions will
+but only has room for about 180,000 tokens of KV cache, so 36 long sessions will
 wait on each other. Using two GPUs (`--tensor-parallel-size 2`) leaves much more
 room.
 
@@ -158,9 +158,9 @@ uv run python -m kit check ../my-harness
 uv run python eval/run.py ../my-harness
 ```
 
-The evaluation server runs about 12 tasks at once. You can test similar load
-locally with `eval/run.py --trials 9` if your machine has enough CPUs (4 to 6
-per task). Before your public hostname is live,
+The evaluation server runs about 36 tasks at once. `eval/run.py --trials 12`
+puts a third of that load on your endpoint if your machine has enough CPUs (4 to
+6 per task). Before your public hostname is live,
 `--model-base-url http://localhost:8090/v1` points both commands at your local
 gate, though `kit check` will only print `ready to submit` when run without
 `--model-base-url`.
@@ -169,5 +169,7 @@ gate, though `kit check` will only print `ready to submit` when run without
 
 Run the model server, gate, and tunnel as services that restart on failure and
 start on boot (systemd units or Docker with `--restart unless-stopped`). Keep
-them running until your submission page shows the evaluation has finished.
-Rotate the key when the competition ends.
+them running until your submission page shows Scored, or Failed for a reason on
+your side; after a failure on our side, keep the endpoint up until you have
+resubmitted or an organizer has re-run it. Rotate the key when the competition
+ends.

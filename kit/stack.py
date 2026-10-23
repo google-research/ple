@@ -66,6 +66,10 @@ PLATFORM = "linux/amd64"
 EGRESS_IMAGE = "python:3.12-slim"
 EGRESS_SCRIPT = pathlib.Path(__file__).with_name("egress.py")
 EGRESS_NETWORK = "plebench-serve-egress"
+# The serve network's bridge gets no address on the host (Docker 28 and later),
+# so the serve container cannot reach a service listening on the host's 0.0.0.0
+# through the gateway; an older daemon refuses the option
+ISOLATED = ("-o", "com.docker.network.bridge.gateway_mode_ipv4=isolated")
 PROXY_PORT = 3128
 FORWARD_PORT = 8000
 IMAGE_REPO = "plebench-serve"
@@ -247,7 +251,12 @@ def docker(
         env=env or docker_env(),
         check=False,
     )
-  except (OSError, subprocess.TimeoutExpired) as exc:
+  # not str(exc), which holds the whole command line (possibly a script)
+  except subprocess.TimeoutExpired as exc:
+    raise InfraError(
+        f"docker {args[0]}: no answer within {timeout:g} s"
+    ) from exc
+  except OSError as exc:
     raise InfraError(f"docker {args[0]}: {exc}") from exc
   if check and r.returncode != 0:
     raise InfraError(
@@ -262,7 +271,7 @@ def _exists(kind: str, name: str) -> bool:
 
 
 def docker_answers() -> bool:
-  """Whether the Docker daemon answers."""
+  """Returns whether the Docker daemon responds to `docker info`."""
   try:
     return (
         docker(
@@ -301,7 +310,7 @@ def container_alive(container: str) -> bool:
 
 
 def image_id(tag: str) -> str:
-  """The local image's id; "" when there is none."""
+  """Returns the local Docker image ID for `tag`, or `""` if not present."""
   r = docker("image", "inspect", "-f", "{{.Id}}", tag, check=False)
   return r.stdout.strip() if r.returncode == 0 else ""
 
@@ -439,7 +448,7 @@ def register(
 
 
 def unregister(path: pathlib.Path) -> None:
-  """Remove one registration (register's path) before its process exits."""
+  """Removes a process registration file created by `register()`."""
   with contextlib.suppress(OSError):
     pathlib.Path(path).unlink()
 
@@ -816,6 +825,8 @@ class Stack:
     self.forward_port: int | None = None
     self.started_at: float | None = None
     self.egress_copy: pathlib.Path | None = None
+    # whether the serve network has no address on the host (ISOLATED)
+    self.isolated: bool | None = None
 
   @property
   def url(self) -> str:
@@ -841,7 +852,8 @@ class Stack:
       command: Shell command to run inside the serve container.
       env_file: Optional path to an environment file for the serve container.
       allow: List of host patterns permitted by the egress proxy.
-      exceptions: Host patterns excluded from `allow`.
+      exceptions: Private `host:port` endpoints the egress proxy permits too
+        (a model server on this machine).
     """
     try:
       self._start(image, command, env_file, allow, list(exceptions))
@@ -857,7 +869,7 @@ class Stack:
       command: Shell command to run inside the serve container.
       env_file: Optional path to an environment file for the serve container.
       allow: List of host patterns permitted by the egress proxy.
-      exceptions: List of host patterns excluded from `allow`.
+      exceptions: List of private `host:port` endpoints permitted too.
 
     Raises:
       InfraError: If any Docker command or egress readiness check fails.
@@ -867,7 +879,7 @@ class Stack:
     labels = ["--label", label] + (
         ["--label", f"{RUN_LABEL}={self.run}"] if self.run else []
     )
-    docker("network", "create", "--internal", *labels, self.network)
+    self._create_network(labels)
     docker(
         "create",
         "--name",
@@ -969,6 +981,37 @@ class Stack:
     docker(*args, image, "bash", "-c", command)
     self.started_at = time.monotonic()
 
+  def _create_network(self, labels: list[str]) -> None:
+    """Creates the internal serve network, isolated from the host if it can.
+
+    Docker before 28 refuses the isolated gateway mode, and the network is then
+    a plain internal one, whose gateway is the host: a container on it reaches
+    a service listening on the host's 0.0.0.0.
+
+    Args:
+      labels: The stack's `--label` arguments.
+
+    Raises:
+      InfraError: If Docker refuses the network for any other reason.
+    """
+    r = docker(
+        "network",
+        "create",
+        "--internal",
+        *ISOLATED,
+        *labels,
+        self.network,
+        check=False,
+    )
+    self.isolated = r.returncode == 0
+    if self.isolated:
+      return
+    if "gateway_mode_ipv4" not in (r.stderr or "") + (r.stdout or ""):
+      raise InfraError(
+          f"docker network create: {(r.stderr or r.stdout).strip()[-600:]}"
+      )
+    docker("network", "create", "--internal", *labels, self.network)
+
   def _wait_for_egress(self, timeout: float = EGRESS_READY_SEC) -> None:
     """Waits until the egress proxy logs that its ports are bound.
 
@@ -1012,6 +1055,7 @@ class Stack:
     finally:
       proc.kill()
       proc.wait()
+      proc.stdout.close()
 
   def _egress_script(self) -> pathlib.Path:
     """Writes a world-readable (`0644`) copy of `egress.py` in `cache_root()`.
@@ -1044,7 +1088,7 @@ class Stack:
     return script
 
   def _container(self, which: str) -> str:
-    """The serve container's name, or the egress proxy's for which="egress"."""
+    """Returns the container name for `"serve"` or `"egress"`."""
     return self.serve if which == "serve" else self.egress
 
   def running(self, which: str = "serve") -> bool | None:
@@ -1218,7 +1262,7 @@ def exit_note(st: Stack) -> str | None:
 
 
 def write_env_file(path: pathlib.Path, values: dict[str, str]) -> None:
-  """A Docker env file readable only by this user, created anew."""
+  """Writes `values` to a new user-only (`0600`) Docker env file at `path`."""
   bad = sorted(k for k, v in values.items() if any(c in v for c in "\n\r\x00"))
   if bad:
     raise ValueError(
