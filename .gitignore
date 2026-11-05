@@ -1,5 +1,6 @@
-# Secrets: a submission's .env holds API keys.
+# Keys for local runs (--env-file local.env): never committed.
 .env
+*.env
 
 # Output of local dev-set runs (eval/run.py).
 /runs/
@@ -14,6 +15,3 @@ node_modules/
 
 # uv lockfile (uv run creates one in this clone).
 uv.lock
-
-# Keys in any *.env file.
-*.env

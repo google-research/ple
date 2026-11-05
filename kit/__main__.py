@@ -15,11 +15,11 @@
 # pylint: disable=invalid-name
 """CLI entry point for the PLEBench submission kit.
 
-Runs a submission entry locally through the evaluation server's steps. API keys
-are read from the submission's `.env` file, matching the server. `google-cloud`
-models run locally through a model proxy server configured via `MODEL_PROXY_URL`
-and `MODEL_PROXY_KEY` in the environment or `--env-file` (see
-`kit/model_proxy/`).
+Runs a submission entry locally through the evaluation server's steps. The
+competition takes no keys: `google-cloud` models run locally through a model
+proxy server configured via `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` in the
+environment or `--env-file` (see `kit/model_proxy/`), and a model of your own,
+for local runs only, reads its key from the same places.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ COMMANDS = {
         "build, start and smoke-test the entry as the server does, then review"
         " its artifacts"
     ),
-    "validate": "check submission.yaml and .env without Docker",
+    "validate": "check submission.yaml without Docker",
     "build": "build the bundle and serve image as the server builds them",
     "up": (
         "start the entry's server as the server runs it and print its ws://"
@@ -64,51 +64,35 @@ COMMANDS = {
 
 
 def cmd_validate(a) -> int:
-  """Validates `submission.yaml` and optional `.env` without Docker.
+  """Validates `submission.yaml` without Docker.
 
-  A missing model API key produces a warning rather than an error (since CI
-  validates sample entries that ship `.env.example`), whereas `kit check` and
-  the evaluation server require the key.
+  An entry on a model of your own validates with a note: it runs locally only,
+  and `kit check`, `kit up` and `eval/run.py` read its key from the environment
+  or `--env-file`.
 
   Args:
     a: Parsed CLI arguments containing `dir`.
 
   Returns:
     Exit status code (0 on success).
-
-  Raises:
-    check.SetupError: If `.env` contains invalid or disallowed variables.
   """
   sub = spec.load(a.dir)
-  has_env = os.path.lexists(pathlib.Path(a.dir) / spec.ENV_FILE)
-  dotenv = check.entry_env(pathlib.Path(a.dir))
-  key = sub.model.key_secret
-  missing_key = bool(key) and not dotenv.get(key)
-  # a missing key only warns (below), so stand in a value for it while checking
-  # the file's other names
-  problems = spec.env_problems(
-      sub, {**dotenv, key: "set"} if missing_key else dotenv
-  )
-  if problems:
-    raise check.SetupError(spec.ENV_FILE, "; ".join(problems))
   model = sub.model.api + (
       f" ({sub.model.label})" if sub.model.provider == "google-cloud" else ""
   )
   print(
       f"ok: {sub.name}, {model}; egress"
-      f" {', '.join(sub.allowed_hosts) or 'none'}; {spec.ENV_FILE}"
-      f" {', '.join(dotenv) or 'none'}"
+      f" {', '.join(sub.allowed_hosts) or 'none'}"
   )
-  if missing_key:
-    if has_env:
-      todo = f"add {key}=<your key> to {spec.ENV_FILE}"
-    else:
-      todo = (
-          f"put {key}=<your key> in a {spec.ENV_FILE} at the submission's root"
-      )
+  why, key = spec.local_only(sub.model), sub.model.key_secret
+  if why:
     print(
-        f"warning: {todo} before kit check or submitting: {sub.model.api}"
-        " needs it"
+        f"note: {why}"
+        + (
+            f"; a local run reads {key} from the environment or --env-file"
+            if key
+            else ""
+        )
     )
   return 0
 
@@ -182,11 +166,10 @@ def cmd_up(a) -> int:
     build is interrupted).
   """
   sub = spec.load(a.dir)
-  # Validate .env and model server settings before building so configuration
-  # errors fail immediately.
-  dotenv = check.entry_env(pathlib.Path(a.dir))
+  # Validate model settings before building so configuration errors
+  # fail immediately.
   values = {**os.environ, **check.read_env_file(a.env_file)}
-  rt = check.runtime(sub, dotenv, values, a.model_base_url)
+  rt = check.runtime(sub, values, a.model_base_url)
   for note in rt.notes:
     print(f"warning: {note}", flush=True)
   # On SIGINT, SIGTERM, or SIGHUP, clean up any active builder container or
@@ -222,7 +205,7 @@ def cmd_up(a) -> int:
       # Redact any secret values that might appear in the server's log output.
       print(
           check.scrub(
-              _until_stopped(st, sub.name), check.secret_values(dotenv, values)
+              _until_stopped(st, sub.name), check.secret_values(values)
           ),
           flush=True,
       )
@@ -365,7 +348,8 @@ def cmd_models(a) -> int:
   for model_id, name in models.GOOGLE_CLOUD.items():
     print(f"google-cloud/{model_id:<{width}}  {name}")
   print(
-      "\nWith your own key in .env: openai/<model>, anthropic/<model>,"
+      "\nFor local runs only, on your own key (the competition accepts the"
+      " google-cloud models above): openai/<model>, anthropic/<model>,"
       " gemini/<model>, or openai-compatible/<model> with model_base_url"
       " (docs/models.md)"
   )
@@ -431,16 +415,16 @@ def main(argv: list[str] | None = None) -> int:
       p.add_argument(
           "--env-file",
           help=(
-              "NAME=value lines for this run, such as MODEL_PROXY_URL and "
-              "MODEL_PROXY_KEY (your keys go in the submission's .env)"
+              "NAME=value lines for this run: MODEL_PROXY_URL and"
+              " MODEL_PROXY_KEY, or your own model's key (never in the entry)"
           ),
       )
       p.add_argument(
           "--model-base-url",
           help=(
-              "for an openai-compatible model: call this server instead of "
-              "model_base_url, e.g. vLLM on your machine (private addresses "
-              "allowed; the entry is then not shown ready to submit)"
+              "for an openai-compatible model (local runs only): call this"
+              " server instead of model_base_url, e.g. vLLM on your machine"
+              " (private addresses allowed)"
           ),
       )
   parsers["check"].add_argument(

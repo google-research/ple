@@ -585,7 +585,7 @@ class ServeAgent(BaseAgent):
       result = await environment.exec(
           command=hook["command"],
           timeout_sec=int(hook["timeout_sec"]),
-          user=hook["user"],
+          user=hook["user"] or capture.USER,  # Harbor's default: root
       )
       if result.return_code != 0:
         self.logger.warning(

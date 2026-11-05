@@ -31,7 +31,7 @@ limit (waiting `60s * attempt`), `serve.py` resumes the conversation with
 | File | Purpose |
 |---|---|
 | `submission.yaml` | Model declaration, build script, and server startup command |
-| `install.sh` | Downloads the pinned `agy` 1.3.3 binary (with SHA-512 verification) and creates the Python venv |
+| `install.sh` | Downloads the pinned `agy` 1.4.10 binary (with SHA-512 verification) and creates the Python venv |
 | `serve.py` | Sets up an isolated `agy` home and MCP config per task, runs `agy`, and returns its output |
 | `task_mcp.py` | Stdio MCP server exposing `shell`, `read_file`, `write_file`, and `edit_file` in the task container |
 | `taskbridge.py` | Serve protocol and local HTTP relay (shared across Python samples) |
@@ -44,23 +44,23 @@ Set `AGY_EFFORT` under `env:` in `submission.yaml` to control reasoning effort:
 instead. Because `agy` uses
 the native Gemini API, this sample only works with Gemini models.
 
-You can switch `model_api` to `google-cloud/gemini-3.1-pro-preview`, or to
-`gemini/<model>` with your own `GEMINI_API_KEY` in `.env`:
+You can switch `model_api` to `google-cloud/gemini-4-argon` or
+`google-cloud/gemini-3.1-pro-preview`, or, for a local run only, to
+`gemini/<model>` with your own `GEMINI_API_KEY` in your environment or
+`--env-file`:
 
-- **Built-in `agy` models** (Gemini 3.8, 3.7, and 3.6 Flash, and Gemini 3.1
-  Pro): `serve.py` strips `-preview` and appends the effort level (for example,
-  `gemini-3.1-pro-high`; note that Gemini 3.1 Pro only supports `low` and
-  `high`), and `agy` uses its built-in context compaction threshold. You can
-  also set `AGY_MODEL` under `env:` to pass a specific `agy models` identifier
-  directly.
+- **Built-in `agy` models** (Gemini 4 Argon, Gemini 3.8, 3.7, and 3.6 Flash, and
+  Gemini 3.1 Pro): `serve.py` strips `-preview` and appends the effort level
+  (for example, `gemini-3.1-pro-high`; note that Gemini 3.1 Pro only supports
+  `low` and `high`), and `agy` uses its built-in context compaction threshold.
+  You can also set `AGY_MODEL` under `env:` to pass a specific `agy models`
+  identifier directly.
 - **Other Gemini models**: `serve.py` registers `<model>-byom` in
   `settings.json` (`customModelsConfig`) with an explicit context budget so
   `agy` compacts the conversation before hitting the context limit (`agy`
   triggers compaction roughly 70,000 tokens below the configured budget, which
   `serve.py` sets to `max(W - 70000, W / 2 + 70000)` for `AGY_CONTEXT_WINDOW`
   `W`, default `1048576`).
-- **Gemini 4 Argon**: Not supported by `agy` 1.3.3, because `agy` always sends a
-  `thinkingBudget` parameter that Gemini 4 Argon rejects with HTTP `400`.
 
 ## Notes
 

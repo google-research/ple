@@ -38,7 +38,18 @@ additional extensions via `-e` in `harness.py`. To upgrade Pi itself, update
 the version in `package.json`, run `npm install --package-lock-only` to refresh
 `package-lock.json`, and commit both files.
 
-To change the model, set `model_api` in `submission.yaml` to any model in [`docs/models.md`](../../docs/models.md). Claude models (`google-cloud/claude-*`, `anthropic/*`) use Pi's native `anthropic` provider, and Gemini models (`google-cloud/gemini-*`, `gemini/*`) use Pi's native `google` provider, inheriting context limits, thinking support, and vision support from Pi's built-in catalog. Any model not in Pi 1.1.0's catalog—including OpenAI-compatible models and `google-cloud/gemini-4-argon`—falls back to `UNKNOWN_MODEL` in `harness.py` (128k context, 16k max output tokens, text-only; update those limits to match your model, such as 1,048,576 context and 65,536 max output tokens for Gemini 4 Argon, and leave `reasoning` unset for Argon because Pi's `reasoning: true` sends a token budget that Argon rejects with `400`).
+To change the model, set `model_api` in `submission.yaml` to any model in
+[`docs/models.md`](../../docs/models.md). Claude models
+(`google-cloud/claude-*`, or `anthropic/*` in a local run on your own key) use
+Pi's native `anthropic` provider, and Gemini models (`google-cloud/gemini-*`, or
+`gemini/*` in a local run) use Pi's native `google` provider, inheriting context
+limits, thinking support, and vision support from Pi's built-in catalog. Any
+model not in Pi 1.1.0's catalog—including OpenAI-compatible models and
+`google-cloud/gemini-4-argon`—falls back to `UNKNOWN_MODEL` in `harness.py`
+(128k context, 16k max output tokens, text-only; update those limits to match
+your model, such as 1,048,576 context and 65,536 max output tokens for Gemini 4
+Argon, and leave `reasoning` unset for Argon because Pi's `reasoning: true`
+sends a token budget that Argon rejects with `400`).
 
 ## Notes
 

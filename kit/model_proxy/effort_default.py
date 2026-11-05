@@ -20,8 +20,8 @@ Loaded by `config.yaml` as a LiteLLM callback to match the evaluation server:
   (`reasoning_effort`, `thinking`, `output_config`, `reasoning`, or
   `chat_template_kwargs`, either top-level or in `extra_body`) receive the
   model's highest `reasoning_effort`: `max` for Claude and GLM, and `high` for
-  Gemini, gpt-oss, Kimi, and MiniMax. Models without effort levels (Qwen,
-  Llama, DeepSeek, Gemma) are left unchanged.
+  Gemini and gpt-oss. Models without effort levels (Llama, Gemma) are left
+  unchanged.
 - Gemini API requests (`generateContent`, `streamGenerateContent`) to Gemini 3
   and later models whose `thinkingConfig` sets neither `thinkingLevel` nor
   `thinkingBudget` receive `thinkingLevel` `HIGH`.
@@ -51,8 +51,6 @@ HIGHEST = (
     ("glm", "max"),
     ("gemini", "high"),
     ("gpt-oss", "high"),
-    ("kimi", "high"),
-    ("minimax", "high"),
 )
 CALL_TYPES = frozenset({"completion", "acompletion", "anthropic_messages"})
 # Gemini native generateContent routes

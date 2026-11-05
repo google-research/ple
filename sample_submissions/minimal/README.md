@@ -3,7 +3,7 @@
 The smallest complete harness in this repository (under 250 lines of code in
 `serve.py`, built on `taskbridge.py`) and the easiest starting point for a
 custom agent. It calls the Google-sponsored `google-cloud/gemini-3.8-flash`
-model, so it needs no API key and no `.env` file.
+model, so it needs no API key.
 
 ## How it works
 
@@ -38,7 +38,10 @@ are preserved across turns.
 Because the OpenAI SDK reads `OPENAI_BASE_URL` and `OPENAI_API_KEY` (which the evaluator sets for every model), you can switch to any model in [`docs/models.md`](../../docs/models.md) just by changing `model_api` in `submission.yaml`.
 
 - For models with smaller context windows, set a lower `MAX_OUTPUT_TOKENS` (default `32000`) under `env:` in `submission.yaml`.
-- If you want to test locally without a Google Cloud project for `kit/model_proxy`, set `model_api: gemini/gemini-3.8-flash` and put `GEMINI_API_KEY` in `.env`.
+- To try it locally without a Google Cloud project for `kit/model_proxy`, set
+  `model_api: gemini/gemini-3.8-flash` and put `GEMINI_API_KEY` in your
+  environment or `--env-file`. That entry runs locally only; submit it with a
+  `google-cloud/<id>` model.
 - Always generate your `artifacts/` with the same `model_api` you submit.
 
 To keep the code minimal, this starter omits task MCP tools (so `kit check` prints a warning at the `mcp` stage), streaming, and compaction into notes (it only cuts old tool results once the context is full). See [`custom-openai`](../custom-openai/) for a full harness with those features, or [`plan-verify`](../plan-verify/) for a multi-role planner/worker/verifier loop built on `minimal`.

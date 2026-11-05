@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The gate in front of your model server (docs/local-models.md). With MODEL_API_KEY unset it answers 401 to everything.
+# The gate in front of your model server, for local runs (docs/local-models.md). With MODEL_API_KEY unset it answers
+# 401 to everything.
+#   Local:      MODEL_API_KEY=... caddy run --config Caddyfile
+#               (plain HTTP on port 8090: --model-base-url http://localhost:8090/v1, or a tunnel connects to it)
 #   Public IP:  GATE_ADDRESS=llm.example.org MODEL_API_KEY=... caddy run --config Caddyfile
 #               (Caddy fetches the certificate for that name; open ports 80 and 443)
-#   Tunnel:     MODEL_API_KEY=... caddy run --config Caddyfile
-#               (plain HTTP on port 8090 for the tunnel to connect to)
 {$GATE_ADDRESS::8090} {
 	@model {
 		path /v1/*

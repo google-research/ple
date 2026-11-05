@@ -59,9 +59,10 @@ BACKOFF_SEC = 60
 # bytes; Linux refuses one argument over 128 KiB (MAX_ARG_STRLEN)
 MAX_ARGV_PROMPT = 100_000
 TASK_TOOLS = ("shell", "read_file", "write_file", "edit_file")
-# Models built into agy 1.3.3 for a Gemini API key (`agy models`); agy applies
+# Models built into agy 1.4.10 for a Gemini API key (`agy models`); agy applies
 # its own compaction limit to each
 CATALOG = (
+    "gemini-4-argon",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
@@ -69,11 +70,10 @@ CATALOG = (
 )
 # Any other model runs as a custom model, which agy compacts only if
 # settings.json gives it a token budget, once its token estimate passes the
-# budget minus its output reserve (about 70k tokens in agy 1.3.3)
+# budget minus its output reserve (about 70k tokens, measured on agy 1.3.3
+# and 1.4.10)
 CUSTOM_SUFFIX = "-byom"
 AGY_RESERVE = 70_000
-# Gemini 4 Argon's budget
-BUDGETS = {"gemini-4-argon": 786_432}
 # tokens; Gemini's context window (set AGY_CONTEXT_WINDOW for another)
 CONTEXT_WINDOW = int(os.environ.get("AGY_CONTEXT_WINDOW") or 1_048_576)
 RESUME = (
@@ -152,8 +152,8 @@ def prompt_input(prompt: str) -> tuple[list[str], bytes | None]:
 def custom_model() -> tuple[str, dict[str, Any]] | None:
   """Returns the custom model slug and settings entry for non-catalog models.
 
-  Configures a token budget (`BUDGETS[name]` if known, otherwise
-  `max(CONTEXT_WINDOW - AGY_RESERVE, CONTEXT_WINDOW // 2 + AGY_RESERVE)`) so
+  Configures a token budget of
+  `max(CONTEXT_WINDOW - AGY_RESERVE, CONTEXT_WINDOW // 2 + AGY_RESERVE)` so
   `agy` triggers conversation compaction before overflowing the context window.
 
   Returns:
@@ -163,9 +163,7 @@ def custom_model() -> tuple[str, dict[str, Any]] | None:
   name = os.environ["MODEL_NAME"]
   if os.environ.get("AGY_MODEL") or name.removesuffix("-preview") in CATALOG:
     return None
-  budget = BUDGETS.get(name) or max(
-      CONTEXT_WINDOW - AGY_RESERVE, CONTEXT_WINDOW // 2 + AGY_RESERVE
-  )
+  budget = max(CONTEXT_WINDOW - AGY_RESERVE, CONTEXT_WINDOW // 2 + AGY_RESERVE)
   return name + CUSTOM_SUFFIX, {
       "modelName": f"gemini-api://models/{name}",
       "maxTokens": budget,

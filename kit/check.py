@@ -14,7 +14,7 @@
 
 """Runs a submission through the evaluation server checks stage by stage.
 
-Validates `submission.yaml`, `.env`, staged files, build, model connectivity,
+Validates `submission.yaml`, staged files, build, model connectivity,
 websocket listener, smoke/MCP/cancel tasks, and dev-set artifacts, reporting
 any issues to fix.
 """
@@ -358,22 +358,17 @@ KEY_NAME = re.compile(
 )
 
 
-def secret_values(
-    dotenv: dict[str, str], values: dict[str, str]
-) -> dict[str, str]:
-  """Returns secret values mapped to their redacted placeholder labels.
+def secret_values(values: dict[str, str]) -> dict[str, str]:
+  """Returns each key-like variable's name mapped to its secret value.
 
   Args:
-    dotenv: Variables parsed from the submission's `.env` file.
     values: Local environment and `--env-file` variables.
 
   Returns:
-    A mapping from a label (`.env NAME`, or the name of a variable named like a
-    key, such as `MODEL_PROXY_KEY` or `JUDGE_API_KEY`) to its value.
+    A mapping from the name of each variable named like a key (such as
+    `MODEL_PROXY_KEY`, `JUDGE_API_KEY` or `OPENAI_API_KEY`) to its value.
   """
-  out = {f"{spec.ENV_FILE} {k}": v for k, v in dotenv.items()}
-  out.update({k: v for k, v in values.items() if v and KEY_NAME.search(k)})
-  return out
+  return {k: v for k, v in values.items() if v and KEY_NAME.search(k)}
 
 
 def scrub(text: str, hidden: dict[str, str]) -> str:
@@ -480,25 +475,23 @@ EVALUATOR_FAILED = (
 UNREADY = {
     "clone": (
         "a folder of the competition repository is not submitted: make it a"
-        " private repository of its own as README.md's Quick start does (copy"
-        f" it out, `git init`, its {spec.ENV_FILE} there) and check that copy"
+        " repository of its own as README.md's Quick start does (copy it out,"
+        " `git init`) and check that copy"
     ),
     "no-git": (
         "this folder is not a git repository, and the server builds a commit:"
-        " make it the root of a private repository of its own (`git init`,"
-        f" commit everything, its {spec.ENV_FILE} included, push it to GitHub)"
-        " and check it again"
+        " make it the root of a repository of its own (`git init`, commit"
+        " everything, push it to GitHub) and check it again"
     ),
     "subfolder": (
         f"{spec.FILE} must be at the root of the repository you submit, and"
-        " this folder is below its repository's root: make it a private"
-        " repository of its own (copy it out, `git init`, commit it with its"
-        f" {spec.ENV_FILE}, push it to GitHub) and check that copy"
+        " this folder is below its repository's root: make it a repository of"
+        " its own (copy it out, `git init`, commit it, push it to GitHub) and"
+        " check that copy"
     ),
     "uncommitted": (
         "the server builds the commit you submit, and the files stage lists"
-        " what this one lacks: commit it (`git add -A && git commit`, and `git"
-        f" add -f {spec.ENV_FILE}` for a {spec.ENV_FILE} git ignores), push,"
+        " what this one lacks: commit it (`git add -A && git commit`), push,"
         " and submit that commit"
     ),
     "artifacts": (
@@ -506,10 +499,9 @@ UNREADY = {
         f" python eval/run.py <entry>`, which writes {artifacts.ROOT}/ into the"
         " entry, then commit it with the harness (docs/artifacts.md)"
     ),
-    "model-override": (
-        "the model stage called --model-base-url, so model_base_url itself,"
-        " which the server calls, was not tested: once that public endpoint"
-        " answers, run kit check again without the flag"
+    "own-model": (
+        "model_api names a model of your own, which runs locally only: the"
+        " competition accepts only google-cloud/<id> models (docs/models.md)"
     ),
 }
 
@@ -517,8 +509,8 @@ UNREADY = {
 class SetupError(Exception):
   """Configuration error preventing the serve container from starting.
 
-  `stage` identifies the check stage that failed: `.env` (for the submission's
-  `.env` file) or `model` (for `MODEL_PROXY_URL`, `MODEL_PROXY_KEY`, or
+  `stage` identifies the check stage that failed: `model`, for the model's
+  settings (`MODEL_PROXY_URL` and `MODEL_PROXY_KEY`, your own model's key, or
   `--model-base-url`). Error messages never include secret values.
   """
 
@@ -530,9 +522,10 @@ class SetupError(Exception):
 def read_env_file(path: str | None) -> dict[str, str]:
   """Parses `--env-file` settings for a local run using `python-dotenv`.
 
-  Reads local run variables (`MODEL_PROXY_URL`, `MODEL_PROXY_KEY`, `JUDGE_*`),
-  handling quotes, escapes, comments, `export`, and `${NAME}` interpolation.
-  Ignores a leading UTF-8 BOM and omits keys without values.
+  Reads local run variables (`MODEL_PROXY_URL`, `MODEL_PROXY_KEY`, your own
+  model's key, `JUDGE_*`), handling quotes, escapes, comments, `export`, and
+  `${NAME}` interpolation. Ignores a leading UTF-8 BOM and omits keys without
+  values.
 
   Args:
     path: Path to the env file, or None.
@@ -565,43 +558,12 @@ def read_env_file(path: str | None) -> dict[str, str]:
   }
 
 
-def entry_env(src: pathlib.Path) -> dict[str, str]:
-  """Reads and validates the submission's `.env` file in `src`.
-
-  Args:
-    src: Submission directory path.
-
-  Returns:
-    A dictionary of variables from `src/.env`, or `{}` if `.env` does not exist.
-
-  Raises:
-    SetupError: If `.env` is not a regular file, is not UTF-8 text, or fails
-      `spec.read_env` validation.
-  """
-  path = pathlib.Path(src) / spec.ENV_FILE
-  if not os.path.lexists(path):
-    return {}
-  if path.is_symlink() or not path.is_file():
-    raise SetupError(
-        spec.ENV_FILE,
-        f"{spec.ENV_FILE} must be a regular file, not a link or a directory",
-    )
-  try:
-    return spec.read_env(path.read_bytes().decode("utf-8"))
-  except UnicodeDecodeError:
-    raise SetupError(
-        spec.ENV_FILE, f"{spec.ENV_FILE} is not UTF-8 text"
-    ) from None
-  except spec.SpecError as exc:
-    raise SetupError(spec.ENV_FILE, "; ".join(exc.problems)) from None
-
-
 # where the key goes for each setting that names a model server, instead of in
 # its URL (url_problem)
 URL_KEYS = {
     "MODEL_PROXY_URL": "MODEL_PROXY_KEY",
     "JUDGE_BASE_URL": "JUDGE_API_KEY",
-    "--model-base-url": f"MODEL_API_KEY in the submission's {spec.ENV_FILE}",
+    "--model-base-url": "MODEL_API_KEY, in the environment or --env-file",
 }
 
 
@@ -810,32 +772,39 @@ def model_base_url_flag_problem(
 def model_server_problem(
     sub: spec.Submission, values: dict[str, str]
 ) -> str | None:
-  """Returns why a `google-cloud` model's proxy settings are invalid, or None.
+  """Returns why the local model settings in `values` are invalid, or None.
 
-  Verifies that `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` are present in `values`
-  and contain no line breaks or NUL bytes.
+  A `google-cloud` model runs locally through a proxy (`MODEL_PROXY_URL` and
+  `MODEL_PROXY_KEY`); a model of your own needs its key (`sub.model.key_secret`,
+  when it has one). Each must be set, without line breaks or NUL bytes.
 
   Args:
     sub: Parsed submission specification.
     values: Combined environment and `--env-file` variables.
 
   Returns:
-    An error message if proxy variables are missing or malformed, or None.
+    An error message if a setting is missing or malformed, or None.
   """
-  proxy = (
+  proxy = sub.model.provider == "google-cloud"
+  names = (
       ("MODEL_PROXY_URL", "MODEL_PROXY_KEY")
-      if sub.model.provider == "google-cloud"
-      else ()
+      if proxy
+      else tuple(n for n in [sub.model.key_secret] if n)
   )
-  missing = [n for n in proxy if not values.get(n)]
+  missing = [n for n in names if not values.get(n)]
   if missing:
-    return (
-        f"not set: {', '.join(missing)}: export them or put NAME=value lines in"
-        " --env-file (google-cloud models run locally through a model server"
-        " of your own: see kit/model_proxy; the submission's .env is not read"
-        " for them)"
-    )
-  broken = [n for n in proxy if any(c in values[n] for c in "\r\n\x00")]
+    if proxy:
+      how = (
+          "them or put NAME=value lines in --env-file (google-cloud models run"
+          " locally through a model server of your own: see kit/model_proxy)"
+      )
+    else:
+      how = (
+          f"it or put {missing[0]}=<your key> in --env-file ({sub.model.api}"
+          " runs locally only, and its key never goes in the entry)"
+      )
+    return f"not set: {', '.join(missing)}: export {how}"
+  broken = [n for n in names if any(c in values[n] for c in "\r\n\x00")]
   if broken:
     return (
         f"{', '.join(broken)}: a value with a line break cannot reach the serve"
@@ -846,20 +815,19 @@ def model_server_problem(
 
 def runtime(
     sub: spec.Submission,
-    dotenv: dict[str, str],
     values: dict[str, str],
     base_url: str | None = None,
 ) -> Runtime:
   """Constructs the serve container `Runtime` environment and egress settings.
 
-  Combines model variables, `sub.env`, and variables from the submission's
-  `.env` (`dotenv`). Routes `google-cloud` models through `MODEL_PROXY_URL` and
-  `MODEL_PROXY_KEY` from `values`, and applies `base_url` when overriding an
-  `openai-compatible` endpoint locally.
+  Combines the model variables with `sub.env`. Routes `google-cloud` models
+  through `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` from `values`, gives a model
+  of your own its key from `values`, and applies `base_url` when overriding an
+  `openai-compatible` endpoint locally. No other variable of `values` reaches
+  the serve container.
 
   Args:
     sub: Parsed submission specification.
-    dotenv: Variables parsed from the submission's `.env` file.
     values: Local environment and `--env-file` variables.
     base_url: Optional `--model-base-url` override.
 
@@ -867,22 +835,16 @@ def runtime(
     A configured `Runtime` instance for the serve container.
 
   Raises:
-    SetupError: If model settings (`stage="model"`) or `.env` variables
-      (`stage=".env"`) are invalid.
+    SetupError: If the model settings are invalid (`stage="model"`).
   """
   proxy = sub.model.provider == "google-cloud"
   problem = model_base_url_flag_problem(sub, base_url)
   if not problem and proxy and values.get("MODEL_PROXY_URL"):
     problem = url_problem(values["MODEL_PROXY_URL"], "MODEL_PROXY_URL")
+  problem = problem or model_server_problem(sub, values)
   if problem:
     raise SetupError("model", problem)
-  problems = spec.env_problems(sub, dotenv)
-  if problems:
-    raise SetupError(spec.ENV_FILE, "; ".join(problems))
-  problem = model_server_problem(sub, values)
-  if problem:
-    raise SetupError("model", problem)
-  key = dotenv.get(sub.model.key_secret or "", "")
+  key = "" if proxy else values.get(sub.model.key_secret or "", "")
   name, url = (
       ("MODEL_PROXY_URL", values["MODEL_PROXY_URL"])
       if proxy
@@ -902,7 +864,6 @@ def runtime(
   else:
     env, exceptions, notes = models.environment(sub.model, key), [], []
   env.update({k: spec.fill(v, protocol.PORT) for k, v in sub.env.items()})
-  env.update({k: v for k, v in dotenv.items() if k != sub.model.key_secret})
   return Runtime(env, sub.allowed_hosts, exceptions, notes)
 
 
@@ -962,7 +923,7 @@ class Checker:
     )
     self.rebuild = rebuild
     self.report = Report(str(src), requested=["cancel"] if cancel_test else [])
-    self.report.hide(secret_values({}, values))
+    self.report.hide(secret_values(values))
     # started and not yet removed: abort() removes them
     self.stacks: list[stack.Stack] = []
     self.tasks: list[str] = []  # task containers, likewise
@@ -1025,12 +986,13 @@ class Checker:
     self._stages(sub)
     if r.ok:  # like every stage, only when none before it failed
       self._artifacts()
-    if self.base_url and not r.unready:
-      r.unready = "model-override"
+    # before any other reason: the server would not run this model at all
+    if spec.local_only(sub.model):
+      r.unready = "own-model"
     return r
 
   def _stages(self, sub: spec.Submission) -> None:
-    """Runs stages from `.env` through `cancel`, stopping on the first failure.
+    """Runs stages from `files` through `cancel`, stopping on the first failure.
 
     Args:
       sub: Parsed submission specification.
@@ -1039,17 +1001,10 @@ class Checker:
     # kit up's and eval/run.py's checks, in their order, before anything is
     # staged or built
     try:
-      dotenv = entry_env(self.src)
-      r.hide(secret_values(dotenv, {}))
-      rt = runtime(sub, dotenv, self.values, self.base_url)
+      rt = runtime(sub, self.values, self.base_url)
     except SetupError as exc:
       r.add(exc.stage, "fail", str(exc))
       return
-    r.add(
-        spec.ENV_FILE,
-        "pass",
-        ", ".join(dotenv) or f"none ({sub.model.api} needs no key)",
-    )
     for note in rt.notes:
       r.add("model", "warn", note)
     # another kit run on this entry finishes its build first
@@ -1099,23 +1054,18 @@ class Checker:
     # The server builds a commit of a repository with submission.yaml at its
     # root. In any other folder (one of the competition repository, one outside
     # git, one below its repository's root) the kit does not check what is
-    # committed or whether git keeps .env, because committing there would be the
-    # wrong advice.
+    # committed, because committing there would be the wrong advice.
     root, clone = build.repository_root(self.src), build.competition_clone(
         self.src
     )
-    own = (
-        f"what is committed, and whether git keeps your {spec.ENV_FILE}, is"
-        " checked in a repository of its own"
-    )
+    own = "what is committed is checked in a repository of its own"
     if clone:
       r.unready = "clone"
       r.add(
           "files",
           "warn",
           "this entry is a folder of your clone of the competition repository"
-          f" ({clone}), whose .gitignore keeps {spec.ENV_FILE} out of git:"
-          f" {own}",
+          f" ({clone}): {own}",
       )
     elif root is None:
       r.unready = "no-git"
@@ -1142,7 +1092,6 @@ class Checker:
         if r.unready
         else [u for u in source.uncommitted if not artifacts.bundle_excluded(u)]
     )
-    ignored = not r.unready and build.env_ignored(self.src)
     hidden = [] if r.unready else build.flagged(self.src)
     shallow = (
         not r.unready
@@ -1157,13 +1106,6 @@ class Checker:
           "warn",
           "not committed (the server builds a commit):"
           f" {artifacts.shown(uncommitted)}",
-      )
-    if ignored:
-      r.add(
-          "files",
-          "warn",
-          f"git ignores {spec.ENV_FILE}, so the server will not get it: commit"
-          f" it with `git add -f {spec.ENV_FILE}` (in a private repository)",
       )
     if hidden:
       r.add(
@@ -1184,7 +1126,7 @@ class Checker:
           f" {build.MAX_SOURCE_BYTES >> 30} GiB repository limit: run `git"
           " fetch --unshallow`, then check again",
       )
-    if uncommitted or ignored or hidden:
+    if uncommitted or hidden:
       r.unready = "uncommitted"
     # spec.load refused a serve that does not split
     words = shlex.split(sub.serve, comments=True)
@@ -1243,7 +1185,8 @@ class Checker:
           "files",
           "fail",
           f"what looks like an API key or private key: {artifacts.shown(keys)} "
-          f"(keys go in {spec.ENV_FILE} only)",
+          "(the competition takes no keys: a local run reads your own model's"
+          " key from the environment or --env-file, outside the entry)",
       )
     if advice:
       r.add(
@@ -1251,8 +1194,7 @@ class Checker:
           "warn",
           "what looks like an API key or private key, in a dependency's code"
           f" or test data: {artifacts.shown(advice)} (advice: the server does"
-          " not scan for keys; make sure none is yours, which go in"
-          f" {spec.ENV_FILE})",
+          " not scan for keys; make sure none is yours)",
       )
     if unscanned:
       r.add(

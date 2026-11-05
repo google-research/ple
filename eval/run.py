@@ -39,10 +39,10 @@ container.
   `runs/<run>/artifacts/` and (unless `--no-export` is passed) to
   `<submission dir>/artifacts/`.
 
-Harness API keys are read from the submission's `.env`. `MODEL_PROXY_URL/KEY`,
+`MODEL_PROXY_URL/KEY`, the key of a model of your own (local runs only),
 `JUDGE_BASE_URL/API_KEY/MODEL`, and `HF_TOKEN` are read from the environment or
-`--env-file`. Requires Docker, `uv`, and Harbor with `websockets` (see
-`eval/README.md`).
+`--env-file`; the entry holds no keys. Requires Docker, `uv`, and Harbor with
+`websockets` (see `eval/README.md`).
 """
 
 from __future__ import annotations
@@ -1915,13 +1915,13 @@ def checkpoints(
 
 
 def own_judge(
-    sub: spec.Submission, dotenv: dict[str, Any], base_url: str | None = None
+    sub: spec.Submission, values: dict[str, Any], base_url: str | None = None
 ) -> dict[str, str] | None:
   """Builds fallback `JUDGE_*` settings from the submission's own model and key.
 
   Args:
     sub: Loaded submission specification.
-    dotenv: Environment variables loaded from the submission's `.env`.
+    values: The environment and `--env-file` variables, which hold the key.
     base_url: Optional `--model-base-url` override.
 
   Returns:
@@ -1939,7 +1939,7 @@ def own_judge(
   return {
       "JUDGE_BASE_URL": base_url or sub.model.endpoint,
       "JUDGE_MODEL": sub.model.name,
-      "JUDGE_API_KEY": dotenv.get(sub.model.key_secret) or "",
+      "JUDGE_API_KEY": values.get(sub.model.key_secret or "") or "",
   }
 
 
@@ -2963,14 +2963,11 @@ def regrade(
   if saved.get("submission_dir"):
     try:
       entry = pathlib.Path(saved["submission_dir"])
-      own = own_judge(
-          spec.load(entry), check.entry_env(entry), saved.get("model_base_url")
-      )
+      own = own_judge(spec.load(entry), values, saved.get("model_base_url"))
     except (OSError, spec.SpecError, check.SetupError):
       print(
           f"note: {saved['submission_dir']} no longer holds a valid"
-          f" submission.yaml and {spec.ENV_FILE}, so its model cannot be the"
-          " judge of last resort",
+          " submission.yaml, so its model cannot be the judge of last resort",
           flush=True,
       )
   judge = judge_or_exit(values, own)
@@ -3262,7 +3259,8 @@ def main(argv: list[str] | None = None) -> int:
       return _main(argv)
   except stack.InfraError as exc:
     sys.exit(f"Docker failed: {exc}")
-  # Handle errors in the submission's .env or local model server configuration.
+  # Handle errors in the local model settings (proxy, key, or
+  # --model-base-url).
   except check.SetupError as exc:
     sys.exit(f"{exc.stage}: {exc}")
   except KeyboardInterrupt:
@@ -3347,15 +3345,15 @@ def _main(argv: list[str] | None) -> int:
   ap.add_argument(
       "--env-file",
       help=(
-          "NAME=value lines for this run: MODEL_PROXY_URL/KEY, JUDGE_* (your"
-          " keys go in the submission's .env)"
+          "NAME=value lines for this run: MODEL_PROXY_URL/KEY, your own"
+          " model's key, JUDGE_* (never in the entry)"
       ),
   )
   ap.add_argument(
       "--model-base-url",
       help=(
-          "use this server instead of model_base_url (a model you serve"
-          " locally)"
+          "local runs only: use this server instead of model_base_url (a"
+          " model you serve)"
       ),
   )
   ap.add_argument(
@@ -3451,11 +3449,13 @@ def _main(argv: list[str] | None) -> int:
     sys.exit(problem)
   own = rt = None
   if sub:
-    dotenv = check.entry_env(entry)
-    rt = check.runtime(sub, dotenv, values, base_url=a.model_base_url)
+    rt = check.runtime(sub, values, base_url=a.model_base_url)
     for note in rt.notes:
       print(f"warning: {note}", flush=True)
-    own = own_judge(sub, dotenv, a.model_base_url)
+    why = spec.local_only(sub.model)
+    if why:
+      print(f"note: {why}", flush=True)
+    own = own_judge(sub, values, a.model_base_url)
   judge = judge_or_exit(values, own)
   # Resolve tasks before building so download errors surface immediately.
   found = tasks_or_exit(wanted, a.tasks_dir, values)
@@ -3937,9 +3937,7 @@ def replay(a: argparse.Namespace, values: dict[str, Any]) -> int:
         " REFUSED lines above"
     )
     return 1
-  judge = judge_or_exit(
-      values, own_judge(sub, check.entry_env(entry), a.model_base_url)
-  )
+  judge = judge_or_exit(values, own_judge(sub, values, a.model_base_url))
   usable = [t for t in wanted if rv.tasks[t].status == artifacts.OK]
   found = tasks_or_exit(usable, a.tasks_dir, values) if usable else {}
   need_judge(found, judge)

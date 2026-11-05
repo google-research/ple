@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import dataclasses
-import io
 import pathlib
 import re
 import shlex
@@ -28,9 +27,6 @@ from . import models
 
 FILE = "submission.yaml"
 MAX_BYTES = 16 * 1024
-ENV_FILE = ".env"  # the keys, beside submission.yaml (read_env)
-MAX_ENV_BYTES = 16 * 1024
-MAX_ENV_VARS = 32
 SRC = "/opt/harness/src"
 # every task's agent time limit, in eval/run.py and on the evaluation server
 AGENT_TIMEOUT_SEC = 6 * 3600
@@ -48,7 +44,11 @@ KNOWN = {"src", "port"}
 # the shell's own expansion, left as is
 PLACEHOLDER_RE = re.compile(r"(?<!\$)\{([a-z_]+)\}")
 REMOVED = {
-    "secrets": f"removed; put keys in {ENV_FILE} at the repository root",
+    "secrets": (
+        "removed; the competition takes no keys (google-cloud models need"
+        " none, and a local run of your own model reads its key from the"
+        " environment or --env-file)"
+    ),
     "egress": (
         "removed; a harness reaches its model's endpoint and no other host"
     ),
@@ -69,7 +69,7 @@ RESERVED = (
 
 
 class SpecError(ValueError):  # pylint: disable=g-bad-exception-name
-  """Raised when `submission.yaml` or `.env` fails validation."""
+  """Raised when `submission.yaml` fails validation."""
 
   def __init__(self, problems: list[str]):
     """Initializes SpecError with a list of validation problems.
@@ -238,8 +238,7 @@ def validate(data) -> list[str]:
       )
     elif "${" in v or any(c in v for c in "\n\r\x00") or _unencodable(v):
       problems.append(
-          f"env.{k}: one line, written out (no ${{...}}); API keys belong in"
-          f" {ENV_FILE}"
+          f"env.{k}: one line, written out (no ${{...}}), and never an API key"
       )
     else:
       problems += _placeholders("env", v)
@@ -350,112 +349,22 @@ def fill(text: str, port: int | None = None) -> str:
   return PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), m.group(0)), text)
 
 
-def _name_shown(name: str) -> str:
-  """Returns how a `.env` problem names a line's invalid variable name.
+def local_only(model: models.Model) -> str:
+  """Returns why the competition would refuse `model`, or "" if it accepts it.
 
-  A name that is only spelt in the wrong case (`openai_api_key`) is repeated;
-  any other could be a key pasted where the name goes, and is not.
-
-  Args:
-    name: The text before `=` on the line.
-
-  Returns:
-    The quoted name, or `the name before =`.
-  """
-  if ENV_KEY_RE.fullmatch(name.upper()) and not any(c.isdigit() for c in name):
-    return repr(name)
-  return "the name before ="
-
-
-def read_env(text: str) -> dict[str, str]:
-  """Parses `NAME=value` lines from `.env` content without variable expansion.
-
-  Uses `python-dotenv` to handle quoting, escapes, comments, and `export`
-  prefixes, while rejecting `${...}` interpolations since the evaluator has no
-  outer variables to expand. Leading UTF-8 BOMs are stripped and valueless
-  keys are ignored. Error messages report line numbers without quoting values.
+  The competition takes no keys, so a submission names a `google-cloud` model.
+  A model of your own still runs locally, its key read from the environment or
+  `--env-file`, never from the entry.
 
   Args:
-    text: Raw text content of the `.env` file.
+    model: The parsed `Model` of a submission.
 
   Returns:
-    A dictionary mapping environment variable names to their string values.
-
-  Raises:
-    SpecError: If the `.env` content exceeds limits or contains invalid lines.
+    The reason, naming `model_api`, or "" for a `google-cloud` model.
   """
-  # the kit's and the portal's environments both have python-dotenv
-  from dotenv.parser import parse_stream  # pylint: disable=g-import-not-at-top
-
-  text = text.removeprefix("\ufeff")
-  if len(text.encode("utf-8", "surrogatepass")) > MAX_ENV_BYTES:
-    raise SpecError([f"{ENV_FILE} is larger than {MAX_ENV_BYTES // 1024} KiB"])
-  problems: list[str] = []
-  values: dict[str, str] = {}
-  first: dict[str, int] = {}
-  for b in parse_stream(io.StringIO(text)):
-    where = f"{ENV_FILE} line {b.original.line}"
-    if b.error:
-      problems.append(
-          f"{where}: not a NAME=value line (quote a value that holds a space"
-          " followed by #)"
-      )
-    # a blank line, a comment, or a name without a value
-    elif b.key is None or b.value is None:
-      continue
-    elif not ENV_KEY_RE.fullmatch(b.key):
-      problems.append(
-          f"{where}: {_name_shown(b.key)} is not an environment variable name"
-          " (A-Z, 0-9 and _)"
-      )
-    elif b.key in first:
-      problems.append(
-          f"{where}: {b.key} is set again (first on line {first[b.key]})"
-      )
-    elif any(c in b.value for c in "\r\n\x00") or _unencodable(b.value):
-      problems.append(f"{where}: {b.key} must be one line")
-    elif "${" in b.value:
-      problems.append(f"{where}: {b.key}: write the value out (no ${{...}})")
-    else:
-      first[b.key] = b.original.line
-      values[b.key] = b.value
-  if len(values) > MAX_ENV_VARS:
-    problems.append(f"{ENV_FILE}: at most {MAX_ENV_VARS} variables")
-  if problems:
-    raise SpecError(problems)
-  return values
-
-
-def env_problems(sub: Submission, values: dict[str, str]) -> list[str]:
-  """Checks `.env` variables against a submission's model and `env` rules.
-
-  Reports if the required model API key is missing, if a variable other than
-  that key is reserved, or if a variable duplicates one in `sub.env`. Error
-  messages name variables without exposing their values.
-
-  Args:
-    sub: The validated `Submission`.
-    values: Environment variables parsed by `read_env`.
-
-  Returns:
-    A list of validation problem descriptions, or an empty list if valid.
-  """
-  key = sub.model.key_secret
-  problems = (
-      [f"add {key}=<your key> to {ENV_FILE}: {sub.model.api} needs it"]
-      if key and not values.get(key)
-      else []
+  if model.provider == "google-cloud":
+    return ""
+  return (
+      f"model_api {model.api} is a model of your own, which runs locally only:"
+      " the competition accepts only google-cloud/<id> models (docs/models.md)"
   )
-  for name in values:
-    if name in RESERVED and name != key:
-      problems.append(
-          f"{name} in {ENV_FILE} is {_reserved(name, sub.model)}"
-          + (
-              f" (your model's key is {key})"
-              if key
-              else f" ({sub.model.api} needs no key)"
-          )
-      )
-    elif name in sub.env:
-      problems.append(f"{name} is in both {ENV_FILE} and env: keep one")
-  return problems

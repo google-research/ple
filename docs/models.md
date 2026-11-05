@@ -1,23 +1,18 @@
 # Models
 
 The `model_api` field in `submission.yaml` declares which model your harness
-calls. Whatever the provider, your server receives the same `MODEL_*` and
-`OPENAI_*` environment variables, so a harness that reads them can switch models
-without code changes.
+calls. Submissions use one of the Google-sponsored `google-cloud/<id>` models,
+whose key the evaluation server supplies, so the competition takes no API keys.
+Whatever the model, your server receives the same `MODEL_*` and `OPENAI_*`
+environment variables, so a harness that reads them can switch models without
+code changes. The leaderboard shows the model beside each entry.
 
-| `model_api` | Provider | Required in `.env` | Outbound host allowed |
-|---|---|---|---|
-| `google-cloud/<id>` | Google-sponsored models | None | Sponsored model endpoint |
-| `openai/<model>` | OpenAI (your account) | `OPENAI_API_KEY=...` | `api.openai.com` |
-| `anthropic/<model>` | Anthropic (your account) | `ANTHROPIC_API_KEY=...` | `api.anthropic.com` |
-| `gemini/<model>` | Google AI Studio (your account) | `GEMINI_API_KEY=...` | `generativelanguage.googleapis.com` |
-| `openai-compatible/<model>` + `model_base_url` | Your own server (vLLM, SGLang, etc.) or any compatible provider | `MODEL_API_KEY=...` | Host of `model_base_url` |
-
-The leaderboard shows the model beside each entry. Put any required API key in `.env` ([`kit/README.md`](../kit/README.md#env)). With your own API key or model server, you pay for every model call the evaluation server makes, including three runs of the test set. Your key's rate limits or your server must sustain about 36 tasks at once ([Submissions](rules.md#submissions)).
+For local runs only, `model_api` can also name a model of your own
+([below](#your-own-model-local-runs-only)).
 
 ## Google-sponsored models (`google-cloud/<id>`)
 
-These thirteen models are hosted for the competition, need no API key, and are
+These eight models are hosted for the competition, need no API key, and are
 free on our servers:
 
 | `model_api` | Model | Supported APIs |
@@ -27,16 +22,11 @@ free on our servers:
 | `google-cloud/gemini-3.1-pro-preview` | Gemini 3.1 Pro (preview) | OpenAI Chat Completions, Gemini API |
 | `google-cloud/claude-opus-5-5` | Claude Opus 5.5 | OpenAI Chat Completions, Anthropic Messages |
 | `google-cloud/gpt-oss-120b` | gpt-oss 120B | OpenAI Chat Completions |
-| `google-cloud/qwen3-coder-480b` | Qwen3 Coder 480B A35B | OpenAI Chat Completions |
-| `google-cloud/qwen3-next-80b` | Qwen3-Next 80B A3B Instruct | OpenAI Chat Completions |
-| `google-cloud/deepseek-v3.2` | DeepSeek-V3.2 | OpenAI Chat Completions |
-| `google-cloud/kimi-k2-thinking` | Kimi K2 Thinking | OpenAI Chat Completions |
-| `google-cloud/minimax-m2` | MiniMax M2 | OpenAI Chat Completions |
 | `google-cloud/glm-5.2` | GLM 5.2 | OpenAI Chat Completions |
 | `google-cloud/gemma-4-26b` | Gemma 4 26B A4B | OpenAI Chat Completions |
 | `google-cloud/llama-4-maverick` | Llama 4 Maverick 17B 128E | OpenAI Chat Completions |
 
-All thirteen support tool calling, with or without streaming. Run
+All eight support tool calling, with or without streaming. Run
 `uv run python -m kit models` to print this list.
 
 ### Running google-cloud models on your machine
@@ -66,14 +56,13 @@ cover.
 
 ## What your server receives
 
-| Variable | `google-cloud/<id>` | `openai/` | `anthropic/` | `gemini/` | `openai-compatible/` |
-|---|---|---|---|---|---|
-| `MODEL_API` | As written | As written | As written | As written | As written |
-| `MODEL_NAME` | `<id>` | `<model>` | `<model>` | `<model>` | `<model>` |
-| `MODEL_BASE_URL` | Gateway URL (`.../v1`) | `https://api.openai.com/v1` | `https://api.anthropic.com/v1` | `https://generativelanguage.googleapis.com/v1beta/openai` | `model_base_url` |
-| `MODEL_API_KEY` | Per-submission key | Your key | Your key | Your key | Your key |
-| `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | Gateway URL without `/v1` (Claude models) | Not set | `https://api.anthropic.com`, your key | Not set | Not set |
-| `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` | Gateway URL without `/v1` (Gemini models) | Not set | Not set | `https://generativelanguage.googleapis.com`, your key | Not set |
+| Variable | Value for `google-cloud/<id>` |
+|---|---|
+| `MODEL_API` | `model_api` as written |
+| `MODEL_NAME` | `<id>` |
+| `MODEL_BASE_URL`, `MODEL_API_KEY` | Gateway URL (`.../v1`) and the per-submission key |
+| `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | Gateway URL without `/v1` and the same key (Claude models only) |
+| `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` | Gateway URL without `/v1` and the same key (Gemini models only) |
 
 On the evaluation server, a `google-cloud` entry's key is generated for that
 submission and works only for the declared model; requests for any other model
@@ -115,17 +104,37 @@ every turn re-processes the full conversation.
 For Claude and Gemini models, the Anthropic and Gemini SDKs read their
 respective variables from the table above.
 
-## Serving your own model (`openai-compatible/<model>`)
+## Your own model (local runs only)
 
-Any server that implements the OpenAI Chat Completions API with tool calls (in
-both streamed and non-streamed responses) works. Because the evaluation server
-reaches it over the internet:
+`kit check`, `kit up`, and `eval/run.py` can also run your harness on a model
+you pay for or serve, for example to compare models on the dev set. The
+competition accepts only `google-cloud/<id>` models, so `kit check` never
+reports such an entry ready to submit. Its key goes in your environment or in
+`--env-file` (kept outside your entry, like `MODEL_PROXY_KEY`), never in your
+repository.
 
-- `model_base_url` must be an `https://` URL (typically ending in `/v1`) on a DNS name with a public IPv4 address and no private IP resolutions.
-- The server must require `Authorization: Bearer <MODEL_API_KEY>`, accept the model name after `openai-compatible/`, and handle about 36 concurrent tasks until your submission is scored.
-- Test-set prompts and files reach your server, so it must not log or store them.
+| `model_api` | Provider | Key (environment or `--env-file`) | Outbound host allowed |
+|---|---|---|---|
+| `openai/<model>` | OpenAI | `OPENAI_API_KEY` | `api.openai.com` |
+| `anthropic/<model>` | Anthropic | `ANTHROPIC_API_KEY` | `api.anthropic.com` |
+| `gemini/<model>` | Google AI Studio | `GEMINI_API_KEY` | `generativelanguage.googleapis.com` |
+| `openai-compatible/<model>` + `model_base_url` | A server you run (vLLM, SGLang, etc.) or any compatible provider | `MODEL_API_KEY` | Host of `model_base_url`, or of `--model-base-url` |
 
-[`local-models.md`](local-models.md) shows how to serve a model from your own GPUs, and [`sample_submissions/local-model/`](../sample_submissions/local-model/) is a complete entry configured this way.
+Your server receives the provider's OpenAI-compatible URL (or `model_base_url`)
+in `MODEL_BASE_URL` and `OPENAI_BASE_URL`, and the key in `MODEL_API_KEY` and
+`OPENAI_API_KEY`. For `anthropic/` it also gets `ANTHROPIC_BASE_URL`
+(`https://api.anthropic.com`) and `ANTHROPIC_API_KEY`; for `gemini/`,
+`GOOGLE_GEMINI_BASE_URL` (`https://generativelanguage.googleapis.com`) and
+`GEMINI_API_KEY`.
+
+For `openai-compatible/`, any server that implements the OpenAI Chat Completions
+API with tool calls (in both streamed and non-streamed responses) works. The
+part after `openai-compatible/` is the model name sent in requests.
+`model_base_url` must be an `https://` URL on a public DNS name; to reach a
+server on your machine or network, pass `--model-base-url` instead.
+[`local-models.md`](local-models.md) shows how to serve a model from your own
+GPUs, and [`sample_submissions/local-model/`](../sample_submissions/local-model/)
+is a complete entry configured this way.
 
 ## Tips for calling models
 
@@ -148,8 +157,8 @@ reaches it over the internet:
   turn in its conversation history.
 - When you call a Google-sponsored model without specifying a reasoning level,
   the evaluation server and `kit/model_proxy` default to the model's highest
-  setting: `max` for Claude and GLM, and `high` for Gemini, gpt-oss, Kimi, and
-  MiniMax. Pass `reasoning_effort` (or `thinking`) explicitly to use a lower
+  setting: `max` for Claude and GLM, and `high` for Gemini and gpt-oss. Pass
+  `reasoning_effort` (or `thinking`) explicitly to use a lower
   level. LLM judge calls are the one exception: they run at the model's standard
   default (via `<model>-judge` on `kit/model_proxy`). A judge request that
   Claude Opus 5.5 refuses is sent once to Claude Opus 5, by the evaluation
@@ -173,9 +182,8 @@ reaches it over the internet:
   requests that enable them with HTTP `400`: Gemini Google Search, URL context,
   and code execution; Claude web search, web fetch, and code execution; and
   OpenAI `web_search_options` or hosted tools (web search, file search, code
-  interpreter, computer use, remote MCP). With your own API key, requests go
-  straight to the provider, so your harness must not enable those tools
-  either—always use function tools that run inside the task container.
+  interpreter, computer use, remote MCP). Always use function tools that run
+  inside the task container.
   `kit/model_proxy` only exposes the endpoints harnesses use (Chat Completions,
   Anthropic Messages, the Responses API, and Gemini
   `generateContent`/`streamGenerateContent`) and returns `400` for any other

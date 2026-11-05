@@ -16,9 +16,9 @@
 
 # Build step: the pinned agy binary (checksum verified) and a Python venv for serve.py, all under /opt/harness.
 set -euo pipefail
-# agy 1.3.3
-AGY_URL=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.3.3-5524738307653632/linux-x64/cli_linux_x64.tar.gz
-AGY_SHA512=abe3ddf5cf30d3adaa586acf505221aa19702f5ca71af3c8b1f9b1a5976bd8e5c151c41ea33b39c41675d25843462a3e8c382c054f580e9d7e1688919d3b5110
+# agy 1.4.10
+AGY_URL=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.10-5501573669978112/linux-x64/cli_linux_x64.tar.gz
+AGY_SHA512=3a14c21697e86349ce8402e0b1889cbd1d3a5f4e2cb4dc43aae1c48c404240c2ccff9f775eec277e1f759234a33ec026645c63ed22ab6f6ebede561eda7c38b6
 curl -fsSL "$AGY_URL" -o /tmp/agy.tar.gz
 echo "$AGY_SHA512  /tmp/agy.tar.gz" | sha512sum -c -
 mkdir -p /opt/harness/bin

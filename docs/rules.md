@@ -5,7 +5,7 @@
 The competition has two task sets:
 
 - **Dev set (29 tasks):** published, graders included, in the
-  [Hugging Face dataset](https://huggingface.co/datasets/physical-engineerings-last-exam/physical-engineerings-last-exam) that
+  [Hugging Face dataset](https://huggingface.co/datasets/google/physical-engineerings-last-exam) that
   [`eval/dev_set.yaml`](../eval/dev_set.yaml) names. You run it on your machine
   with `eval/run.py`, and the `artifacts/` from that run go into your
   submission. Their grade is your dev score.
@@ -22,7 +22,7 @@ entries before publishing the results. Dates are posted on the [competition site
 
 ## Submissions
 
-Sign in to the [competition site](https://ple-bench.com) with your GitHub account (one account per participant) and [register](https://ple-bench.com/competition/register) before your first submission. A submission is a single commit of a GitHub repository containing `submission.yaml`, your harness ([`kit/README.md`](../kit/README.md#what-you-submit)), and the `artifacts/` from your dev-set run ([`artifacts.md`](artifacts.md)). Any repository with a `.env` file must be private.
+Sign in to the [competition site](https://ple-bench.com) with your GitHub account (one account per participant) and [register](https://ple-bench.com/competition/register) before your first submission. A submission is a single commit of a GitHub repository containing `submission.yaml`, your harness ([`kit/README.md`](../kit/README.md#what-you-submit)), and the `artifacts/` from your dev-set run ([`artifacts.md`](artifacts.md)). The repository can be public, or private with the competition's GitHub App installed. Your harness must call one of the Google-sponsored `google-cloud/<id>` models ([`models.md`](models.md)); the competition takes no API keys.
 
 The submit page checks `artifacts/` before queuing your submission. A commit refused at submit time ([`artifacts.md`](artifacts.md#refused-at-submit-time-no-submission-slot-is-used)) does not use a submission slot.
 
@@ -40,12 +40,6 @@ comes on top. We build your harness, run the smoke task, grade your committed
 dev artifacts, run the reproduction check, and then run the test set three
 times at once (about 36 tasks in flight, 12 per run). Your submission page
 tracks its progress.
-
-With your own API key or model server, you pay for every model call the
-evaluation server makes: the smoke task, the reproduction check on three dev
-tasks, and three runs of the test set, including anything run again after a
-fault on our side. Your key's rate limits or your server must sustain about 36
-tasks at once; 429s and timeouts from them count against your score.
 
 ## Scoring
 
@@ -73,11 +67,12 @@ that run, and a test run in which no task could be graded runs again; the runs
 already scored are kept.
 
 Failures of your harness count as the task's outcome: a crash, a protocol
-violation, hitting the task's time limit, or errors from a third-party or
-self-hosted model endpoint. Deliverables already written in the task container
-before the failure are still graded. A harness that exits with an error before
-its model produced any output counts as not started and runs again, up to three
-attempts in all; a task whose harness never starts scores `0` in that run.
+violation, hitting the task's time limit, or an invalid request to the model
+(such as one answered with `400`). Deliverables already written in the task
+container before the failure are still graded. A harness that exits with an
+error before its model produced any output counts as not started and runs again,
+up to three attempts in all; a task whose harness never starts scores `0` in
+that run.
 
 The leaderboard ranks participants by their best scored submission, using the
 test score rounded to the three decimals it shows. Ties go to the earlier
@@ -120,9 +115,6 @@ you on your submission page.
   APIs are not allowed), inspect grading scripts, or tamper with the evaluation
   containers.
 - Do not log, store, publish, or share the prompts or files of the test tasks.
-  Because test prompts reach the model endpoint your harness calls, any
-  self-hosted endpoint (`openai-compatible/...`) must have prompt and request
-  logging turned off.
 - The `model_api` in `submission.yaml` must match the model your harness actually calls.
 
 Organizers may disqualify a submission that breaks these rules.

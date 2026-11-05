@@ -42,6 +42,9 @@ FOLDER = "deliverables"  # in the trial directory
 INFO = "capture.json"
 LIST_SEC = 120  # one listing command in the task container
 CAPTURE_SEC = 300  # the whole copy after the session, whatever it holds
+# Harbor collects artifacts as root; a world's app data under /app can be
+# closed to the agent's user
+USER = "root"
 MARK = "@@plebench-listing@@"
 FIND_DONE = "@@plebench-find-done@@"
 # Lists every entry under the deliverables except folders, never following a
@@ -175,6 +178,7 @@ async def listing(environment, deliverables: list[str]) -> dict[str, Any]:
       ),
       cwd="/",
       timeout_sec=LIST_SEC,
+      user=USER,
   )
   out = r.stdout or ""
   if MARK in out:
@@ -191,6 +195,7 @@ async def listing(environment, deliverables: list[str]) -> dict[str, Any]:
       command=f"sh -c {shlex.join([LIST_FIND])} sh {shlex.join(paths)}",
       cwd="/",
       timeout_sec=LIST_SEC,
+      user=USER,
   )
   out = r.stdout or ""
   if FIND_DONE in out:
@@ -554,6 +559,7 @@ async def _copy_out(
               ),
               cwd="/",
               timeout_sec=CAPTURE_SEC,
+              user=USER,
           )
       )
       if exit_status(r.stdout) not in (0, 1):  # 1: a file changed meanwhile
@@ -573,7 +579,10 @@ async def _copy_out(
     finally:
       with contextlib.suppress(Exception):
         await environment.exec(
-            command=f"rm -f {remote_list} {remote_tar}", cwd="/", timeout_sec=30
+            command=f"rm -f {remote_list} {remote_tar}",
+            cwd="/",
+            timeout_sec=30,
+            user=USER,
         )
 
 

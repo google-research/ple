@@ -30,11 +30,6 @@ GOOGLE_CLOUD = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro (preview)",
     "claude-opus-5-5": "Claude Opus 5.5",
     "gpt-oss-120b": "gpt-oss 120B",
-    "qwen3-coder-480b": "Qwen3 Coder 480B A35B",
-    "qwen3-next-80b": "Qwen3-Next 80B A3B Instruct",
-    "deepseek-v3.2": "DeepSeek-V3.2",
-    "kimi-k2-thinking": "Kimi K2 Thinking",
-    "minimax-m2": "MiniMax M2",
     "glm-5.2": "GLM 5.2",
     "gemma-4-26b": "Gemma 4 26B A4B",
     "llama-4-maverick": "Llama 4 Maverick 17B 128E",
@@ -81,6 +76,12 @@ ENV_NAMES = frozenset({
     "GOOGLE_GEMINI_BASE_URL",
     "GEMINI_API_KEY",
 })
+# How a local run reaches a model server on this machine or network, which
+# model_base_url itself may not name (docs/local-models.md)
+LOCAL_SERVER = (
+    "for a server on your machine or network, keep a placeholder such as"
+    " https://llm.example.org/v1 and pass --model-base-url"
+)
 _MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}")
 # A DNS name of two or more labels. No label starts or ends with '-', and the
 # last starts with a letter, so an IPv4 literal never matches.
@@ -225,8 +226,7 @@ def parse(api, base_url=None) -> Model:
   """
   if not isinstance(api, str) or "/" not in api:
     raise ValueError(
-        "model_api: <provider>/<model>, e.g. google-cloud/claude-opus-5-5 or"
-        " openai/gpt-6-astra"
+        "model_api: <provider>/<model>, e.g. google-cloud/claude-opus-5-5"
     )
   provider, name = api.split("/", 1)
   if provider == "google-cloud":
@@ -298,8 +298,7 @@ def base_url_problem(url) -> str | None:
   else:
     return (
         f"model_base_url: {brief(parts.hostname)} is an IP address; it must be"
-        " a public DNS name (the evaluation server reaches it over the"
-        " internet)"
+        f" a public DNS name ({LOCAL_SERVER})"
     )
   try:
     port = parts.port
@@ -310,7 +309,7 @@ def base_url_problem(url) -> str | None:
   if public_host_problem(parts.hostname):
     return (
         f"model_base_url: {brief(parts.hostname)} must be a public DNS name"
-        " (the evaluation server reaches it over the internet)"
+        f" ({LOCAL_SERVER})"
     )
   if parts.path.rstrip("/").endswith("/chat/completions"):
     return (

@@ -784,21 +784,6 @@ def flagged(src: pathlib.Path) -> list[str]:
   ]
 
 
-def env_ignored(src: pathlib.Path) -> bool:
-  """Returns True if `src` has a `.env` file that git ignores.
-
-  Args:
-    src: Submission directory path.
-
-  Returns:
-    True if `.env` exists in `src` and is ignored by git, False otherwise.
-  """
-  return (
-      os.path.lexists(src / spec.ENV_FILE)
-      and _git(src, "check-ignore", "-q", "--", spec.ENV_FILE) is not None
-  )
-
-
 def repository_root(src: pathlib.Path) -> pathlib.Path | None:
   """Returns the root of the git work tree containing `src`, or None."""
   top = (_git(src, "rev-parse", "--show-toplevel") or "").strip()
@@ -809,8 +794,7 @@ def competition_clone(src: pathlib.Path) -> pathlib.Path | None:
   """Returns the competition repository root if `src` is inside a clone of it.
 
   A competition repository clone contains both `kit/check.py` and
-  `sample_submissions/`; an entry inside it is not a standalone repository and
-  its `.gitignore` excludes `.env`.
+  `sample_submissions/`; an entry inside it is not a standalone repository.
 
   Args:
     src: Submission directory path.
@@ -855,8 +839,8 @@ def _version(src: pathlib.Path) -> str:
 
   Returns the last commit that modified a bundled path along with its
   `git describe --tags --always` string. Because tools like `setuptools-scm` and
-  `hatch-vcs` read `HEAD` directly, committing or tagging only `.env` or
-  artifacts leaves this build key unchanged so the bundle is reused.
+  `hatch-vcs` read `HEAD` directly, committing or tagging only artifacts leaves
+  this build key unchanged so the bundle is reused.
 
   Args:
     src: Submission directory path.
@@ -868,7 +852,7 @@ def _version(src: pathlib.Path) -> str:
   skip = [
       f":(exclude,literal){n}"
       for n in top
-      if n and (n == spec.ENV_FILE or artifacts.bundle_excluded(n))
+      if n and artifacts.bundle_excluded(n)
   ]
   last = (
       _git(
@@ -897,10 +881,10 @@ def _stage_git(
   Provides the repository history in `dest/.git` during `install` (removed by
   `build.sh` before packing) with the commit's index so `git status` shows only
   uncommitted changes. The history holds every commit, tree and tag, and the
-  contents of the files the bundle holds, but no version of the committed
-  `.env` or of artifacts/ (a partial clone without file contents, then those
-  files' contents added): `install` runs as root with the internet, and a
-  dependency's install script could otherwise read them back from the history.
+  contents of the files the bundle holds, but no version of artifacts/ (a
+  partial clone without file contents, then those files' contents added):
+  `install` runs as root with the internet, and a dependency's install script
+  could otherwise read them back from the history.
 
   Its size is measured on a full clone, as the server clones it: a `local`
   clone hard-links objects where possible; otherwise git's transport copies
@@ -968,8 +952,8 @@ def _stage_git(
   for line in listing.split(b"\0"):
     meta, _, path = line.partition(b"\t")
     name = os.fsdecode(path)
-    if meta.split(b" ")[1:2] == [b"blob"] and not (
-        name == spec.ENV_FILE or artifacts.bundle_excluded(name)
+    if meta.split(b" ")[1:2] == [b"blob"] and not artifacts.bundle_excluded(
+        name
     ):
       bundled.append(meta.split(b" ")[2] + b"\n")
   failed = _copy_objects(src, dest, b"".join(bundled))
@@ -1140,15 +1124,13 @@ def _listing(
   names, uncommitted, pointers, executable = (
       listed if listed is not None else (_walked_files(src), [], [], {})
   )
-  # .env goes to the serve container's environment, never into the bundle. The
-  # artifacts folders are graded apart and kept out of the bundle, so a harness
-  # never finds its own dev answers (artifacts.bundle_excluded); all but the one
-  # review() reads, which has limits of its own, still count toward the size.
+  # The artifacts folders are graded apart and kept out of the bundle, so a
+  # harness never finds its own dev answers (artifacts.bundle_excluded); all but
+  # the one review() reads, which has limits of its own, still count toward the
+  # size.
   exempt = artifacts.reviewed_root(names)
   entries, total, left_out = [], 0, set()
   for rel in sorted(set(names)):
-    if rel == spec.ENV_FILE:
-      continue
     try:
       st = os.lstat(src / rel)
     # listed by git but deleted in the working tree
@@ -1224,8 +1206,8 @@ def stage(src: pathlib.Path, dest: pathlib.Path) -> Source:
   checked-out submodules) and records which files differ from `HEAD`. When `src`
   is the repository root, also stages `.git` history via `_stage_git` so
   `install` can inspect it, and incorporates `_version` into the content key.
-  The root `.env` and dev-set artifacts (`artifacts.bundle_excluded`) are
-  excluded from the staged tree, matching the evaluation server.
+  Dev-set artifacts (`artifacts.bundle_excluded`) are excluded from the staged
+  tree, matching the evaluation server.
 
   Args:
     src: Submission source directory path.

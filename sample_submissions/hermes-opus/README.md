@@ -57,7 +57,11 @@ Note: `serve.py` needs only `websockets` (via `taskbridge.py`), which `hermes-ag
 
 ## Customizing
 
-To switch models, change `model_api` in `submission.yaml` to any model in [`docs/models.md`](../../docs/models.md). `serve.py` routes Claude models (`google-cloud/claude-*`, or `anthropic/<model>` with `ANTHROPIC_API_KEY` in `.env`) through Hermes's native Anthropic provider, and all other models through its OpenAI-compatible provider using `MODEL_BASE_URL`.
+To switch models, change `model_api` in `submission.yaml` to any model in
+[`docs/models.md`](../../docs/models.md). `serve.py` routes Claude models
+(`google-cloud/claude-*`, or `anthropic/<model>` in a local run with your own
+`ANTHROPIC_API_KEY`) through Hermes's native Anthropic provider, and all other
+models through its OpenAI-compatible provider using `MODEL_BASE_URL`.
 
 In `serve.py`, you can also tune `MAX_TURNS` (maximum tool-calling turns,
 500 by default as in Hermes, so the task's time limit ends a run),

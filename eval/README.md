@@ -16,13 +16,12 @@ What you need:
 - Docker running locally with about 10 GB of free disk space for base images, plus room for the world images and the CPUs and memory described in [Time and cost](#time-and-cost).
 - [uv](https://docs.astral.sh/uv/) and Harbor 0.20.0 with `websockets`: `uv tool install harbor==0.20.0 --with websockets`. `eval/run.py` checks Harbor's version and `websockets` before starting.
 - Access to your declared model:
-  - For a `google-cloud/<id>` model, set `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` pointing to a local proxy ([`docs/models.md`](../docs/models.md#running-google-cloud-models-on-your-machine)).
-  - For commercial providers, put the required API key in your entry's `.env`.
-  - For a self-hosted model, see [A model you serve yourself](#a-model-you-serve-yourself).
+  - For a `google-cloud/<id>` model (the models you can submit), set `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` pointing to a local proxy ([`docs/models.md`](../docs/models.md#running-google-cloud-models-on-your-machine)).
+  - For a model of your own (local runs only), set its key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `MODEL_API_KEY`) in your environment or `--env-file` ([`docs/models.md`](../docs/models.md#your-own-model-local-runs-only)). For a model you serve, see [A model you serve yourself](#a-model-you-serve-yourself).
 - A judge for the `rubric` and `checks-judge` tasks. `eval/run.py` uses the first available option:
   1. `JUDGE_BASE_URL` with `JUDGE_API_KEY` (any OpenAI-compatible endpoint; setting `JUDGE_API_KEY` without `JUDGE_BASE_URL` stops the run so keys are never sent to the wrong host)
   2. `MODEL_PROXY_URL` with `MODEL_PROXY_KEY`
-  3. Your entry's own model and key (when not using `google-cloud/<id>`)
+  3. Your entry's own model and its key (a local-only entry that does not use `google-cloud/<id>`)
 
   `JUDGE_MODEL` defaults to `claude-opus-5-5` (or to your entry's model when
   option 3 is used). The leaderboard always grades with Claude Opus 5.5, which
@@ -44,16 +43,17 @@ What you need:
   this machine, `eval/run.py` checks before building that the judge's port
   accepts a TCP connection at Docker's bridge address, and stops if it does not.
 - Internet access to `huggingface.co` on first run, and read access to
-  [the dataset](https://huggingface.co/datasets/physical-engineerings-last-exam/physical-engineerings-last-exam).
+  [the dataset](https://huggingface.co/datasets/google/physical-engineerings-last-exam).
   Request access on the dataset page while signed in to Hugging Face, then set
   `HF_TOKEN` to a read token from that account (or run `uv run hf auth login`
   once). You can also pass `--tasks-dir DIR` to use pre-downloaded task folders,
   which are used as they are. Without internet access, a run uses the newest
   download it finished.
 
-Keep local proxy, judge, and Hugging Face settings in an env file outside your
-entry repository and pass it with `--env-file` (keep only the keys your harness
-uses in your entry's `.env`):
+Keep local proxy, judge, and Hugging Face settings (and your own model's key,
+if you run one) in an env file outside your entry repository, such as
+`local.env` in the root of this repository (its `.gitignore` ignores `*.env`),
+and pass it with `--env-file`:
 
 ```bash
 # local.env
@@ -62,6 +62,7 @@ MODEL_PROXY_KEY=<the key you gave kit/model_proxy/start.sh>
 # JUDGE_BASE_URL=https://<an OpenAI-compatible endpoint>/v1
 # JUDGE_API_KEY=<its key>
 # HF_TOKEN=<a Hugging Face token, if needed>
+# OPENAI_API_KEY=<your key>, for a local run on openai/<model> (each provider's name: docs/models.md)
 ```
 
 ### Platform notes
@@ -98,7 +99,7 @@ Finished tasks stay in `results.json` and `export.json`:
 
 ### A model you serve yourself
 
-`--model-base-url http://<address>:<port>/v1` overrides `model_base_url` for a local run. Inside the serve container, `localhost` in that URL is rewritten to `host.docker.internal`, so on Linux your server must listen on `0.0.0.0` (or the Docker bridge IP), not only `127.0.0.1`. Unless `JUDGE_BASE_URL` or `MODEL_PROXY_URL` is set, verifier containers also use that server as the judge, and reach it as the Docker bridge IP on Linux or `host.docker.internal` on macOS. See [`docs/local-models.md`](../docs/local-models.md) for how to publish it for the evaluation server.
+An `openai-compatible/<model>` entry runs locally only. `--model-base-url http://<address>:<port>/v1` overrides `model_base_url` for the run, and its key is `MODEL_API_KEY` from your environment or `--env-file`. Inside the serve container, `localhost` in that URL is rewritten to `host.docker.internal`, so on Linux your server must listen on `0.0.0.0` (or the Docker bridge IP), not only `127.0.0.1`. Unless `JUDGE_BASE_URL` or `MODEL_PROXY_URL` is set, verifier containers also use that server as the judge, and reach it as the Docker bridge IP on Linux or `host.docker.internal` on macOS. See [`docs/local-models.md`](../docs/local-models.md) for a full setup.
 
 ### Debugging against a running server
 

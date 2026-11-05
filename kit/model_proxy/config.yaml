@@ -20,11 +20,6 @@ model_list:
   # models drop the ones Vertex AI does not take (drop_params: true below).
   - {model_name: claude-opus-5-5, litellm_params: {model: vertex_ai/claude-opus-5-5, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global, drop_params: false}}
   - {model_name: gpt-oss-120b, litellm_params: {model: vertex_ai/openai/gpt-oss-120b-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
-  - {model_name: qwen3-coder-480b, litellm_params: {model: vertex_ai/qwen/qwen3-coder-480b-a35b-instruct-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
-  - {model_name: qwen3-next-80b, litellm_params: {model: vertex_ai/qwen/qwen3-next-80b-a3b-instruct-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
-  - {model_name: deepseek-v3.2, litellm_params: {model: vertex_ai/deepseek-ai/deepseek-v3.2-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
-  - {model_name: kimi-k2-thinking, litellm_params: {model: vertex_ai/moonshotai/kimi-k2-thinking-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
-  - {model_name: minimax-m2, litellm_params: {model: vertex_ai/minimaxai/minimax-m2-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
   - {model_name: glm-5.2, litellm_params: {model: vertex_ai/zai-org/glm-5.2-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
   - {model_name: gemma-4-26b, litellm_params: {model: vertex_ai/google/gemma-4-26b-a4b-it-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
   - {model_name: llama-4-maverick, litellm_params: {model: vertex_ai/meta/llama-4-maverick-17b-128e-instruct-maas, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: us-east5}}

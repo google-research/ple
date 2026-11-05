@@ -1,35 +1,37 @@
-# Serving your own model
+# Running the dev set on a model you serve
 
-An entry with `model_api: openai-compatible/<model>` calls a model server you
-run at the `model_base_url` in `submission.yaml`. Our evaluation server calls
-that URL over the internet from Google Cloud for the smoke test, the dev
-reproduction check, and three runs of the test set.
+For a local run, an entry with `model_api: openai-compatible/<model>` can call a
+model server you run, for example to try a model on your own GPUs on the dev
+set. This is for local runs only: the competition accepts only
+`google-cloud/<id>` models ([`models.md`](models.md#your-own-model-local-runs-only)),
+so `kit check` never reports such an entry ready to submit, and the evaluation
+server never calls your server.
 
-A clean way to expose a model on your own GPUs is to start the model server on `127.0.0.1`, put a small auth gate in front of it that checks your key, and publish the gate under a public HTTPS name. [`sample_submissions/local-model/`](../sample_submissions/local-model/) is a complete entry set up this way, with the gate and tunnel configs in its `host/` folder.
+A clean setup keeps the model server on `127.0.0.1` and puts a small auth gate
+in front of it that checks your key. [`sample_submissions/local-model/`](../sample_submissions/local-model/)
+is a complete entry set up this way, with the gate config in its `host/` folder.
 
-## Rules for `model_base_url`
+## Settings
 
-The kit and the evaluation server enforce these rules:
-
-- It must be an `https://` URL on a DNS name. IP addresses, single-label names, and names ending in `.local`, `.internal`, or `.localhost` are refused.
-- Every address the hostname resolves to must be public. The egress proxy
-  refuses private and shared ranges, including Tailscale (`100.64.0.0/10`). The
-  evaluation server has no IPv6, so the hostname needs an `A` record.
-- Any port works (for example, `https://llm.example.org:8443/v1`).
-- The path normally ends in `/v1`, and clients append `/chat/completions`.
+- `model_base_url` in `submission.yaml` must be an `https://` URL on a DNS name
+  (the kit checks it like every field: IP addresses, single-label names, and
+  names ending in `.local`, `.internal`, or `.localhost` are refused). For a
+  server on your machine or network, keep a placeholder (the sample has
+  `https://llm.example.org/v1`) and pass
+  `--model-base-url http://<host>:<port>/v1` to `kit check` and `eval/run.py`.
+- Inside the serve container, `localhost` in `--model-base-url` becomes
+  `host.docker.internal`, so on Linux the address must listen on `0.0.0.0` (or
+  the Docker bridge IP), not only `127.0.0.1`. The gate below listens on all
+  addresses while the model server stays on `127.0.0.1`.
 - The part of `model_api` after `openai-compatible/` is sent as the `model`
   field in API requests, so it must match a name your server accepts (listed at
   `/v1/models`). For `openai-compatible/gpt-oss:20b`, the harness sends
   `gpt-oss:20b`.
-- Put the key in `.env` as `MODEL_API_KEY`. The harness sends it as `Authorization: Bearer <key>`.
+- Put the key in your environment or in `--env-file` as `MODEL_API_KEY`, never in your entry. The harness sends it as `Authorization: Bearer <key>`, and the gate checks it.
 - The egress proxy closes any connection that transfers no bytes in either direction for 30 minutes.
-
-## What the endpoint has to handle
-
-- Tool calls in both streamed and non-streamed responses (the `local-model` sample streams every call).
-- About 36 tasks at once (three test runs of 12 tasks, run together), each with one model call in flight.
-- Continuous uptime from the moment you submit: the submission waits in the queue, then its evaluation takes about a day, and up to about three days if your harness uses most of the 6 hours on many tasks. Errors and timeouts from your endpoint count against your score ([Scoring](rules.md#scoring)).
-- The test set's prompts and files. Turn off request logging on the model server and anything in front of it, and never store task content ([Fair play](rules.md#fair-play)).
+- The endpoint must return tool calls in both streamed and non-streamed
+  responses (the `local-model` sample streams every call), and serve one model
+  call per task you run at once (`eval/run.py --trials N`).
 
 ## 1. Start the model server
 
@@ -42,9 +44,9 @@ vllm serve openai/gpt-oss-120b --served-model-name gpt-oss-120b --host 127.0.0.1
 ```
 
 On a single 80 GB GPU, vLLM 0.29.0 starts `gpt-oss-120b` with default settings,
-but only has room for about 180,000 tokens of KV cache, so 36 long sessions will
-wait on each other. Using two GPUs (`--tensor-parallel-size 2`) leaves much more
-room.
+but only has room for about 180,000 tokens of KV cache, so several long sessions
+will wait on each other. Using two GPUs (`--tensor-parallel-size 2`) leaves much
+more room.
 
 | Server | Tool calls | Context and parallel requests | Built-in auth | Tested by us |
 |---|---|---|---|---|
@@ -75,12 +77,10 @@ From your entry's folder:
 
 ```bash
 export MODEL_API_KEY=$(openssl rand -hex 24)
-echo "MODEL_API_KEY=$MODEL_API_KEY" > .env                       # the harness sends this same key
-caddy run --config host/Caddyfile                                # plain HTTP on port 8090 (for a tunnel)
-GATE_ADDRESS=llm.example.org caddy run --config host/Caddyfile   # or HTTPS on a machine with a public IP
+echo "MODEL_API_KEY=$MODEL_API_KEY" >> <competition repository>/local.env   # for --env-file, outside your entry
+caddy run --config host/Caddyfile                                            # plain HTTP on port 8090
 ```
 
-- On a machine with a public IP, point the domain's `A` record at the machine and open ports 80 and 443; Caddy fetches the TLS certificate automatically.
 - Set `MODEL_SERVER` if the model server is not on `127.0.0.1:8000` (Ollama's
   default is `127.0.0.1:11434`). The gate rewrites the `Host` header to the
   upstream address because Ollama rejects non-local `Host` headers.
@@ -89,21 +89,22 @@ GATE_ADDRESS=llm.example.org caddy run --config host/Caddyfile   # or HTTPS on a
   docker run -d --restart unless-stopped --network host -e MODEL_API_KEY -e MODEL_SERVER \
     -v "$PWD/host/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2
   ```
-  On a public IP, add `-e GATE_ADDRESS -v caddy-data:/data` so the certificate
-  survives restarts.
 
-## 3. Publish the gate
+## 3. A model server on another machine
 
-| Method | Behind NAT | What you need | Verdict |
-|---|---|---|---|
-| Public IP with Caddy serving HTTPS | No | Public IPv4 address, ports 80 and 443, DNS name ([DuckDNS](https://www.duckdns.org) is free) | Best choice if the machine has a public IPv4 address |
-| [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) with [`host/cloudflared.yml`](../sample_submissions/local-model/host/cloudflared.yml) | Yes | Domain using Cloudflare DNS (free plan works) | Best choice behind NAT if you have a domain; TLS terminates at Cloudflare |
-| [Tailscale Funnel](https://tailscale.com/kb/1223/funnel): `tailscale funnel 8090` | Yes | Tailscale account (Funnel is in beta) | Good behind NAT without a domain (public ports 443, 8443, and 10000 only) |
-| SSH reverse tunnel to a small cloud VM | Yes | Cloud VM with a public IPv4 address | Good behind NAT without a tunnel service; run Caddy on the VM |
-| Cloudflare quick tunnel (`--url http://127.0.0.1:8090`) | Yes | Nothing | For testing only: hostname changes on restart and has no uptime guarantee |
-| `ngrok` (free plan) | Yes | Account | For testing only: 1 GB transfer and 20,000 requests/month can run out mid-eval |
+If the GPUs are on another machine, run the model server and the gate there and
+pass the gate's address across your network: `--model-base-url
+http://<machine>:8090/v1` (private addresses are allowed with this flag).
 
-### Notes on tunnels
+If your machine cannot reach that one (behind NAT on another network), give the
+gate a public HTTPS name and pass that instead, for example `--model-base-url
+https://llm.example.org/v1`:
+
+- On a machine with a public IPv4 address, run
+  `GATE_ADDRESS=llm.example.org caddy run --config host/Caddyfile`, point the
+  name's `A` record at the machine, and open ports 80 and 443; Caddy fetches the
+  TLS certificate automatically.
+- Behind NAT, use a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) with [`host/cloudflared.yml`](../sample_submissions/local-model/host/cloudflared.yml) (a domain on Cloudflare DNS).
 
 Cloudflare returns `524` if a response does not start within 125 seconds.
 Streaming responses start right away, and in our tests streams stayed open
@@ -113,32 +114,17 @@ custom domains) can return `403` to non-browser user agents; if `kit check` gets
 a `403` page from Cloudflare, turn off Browser Integrity Check for the hostname
 with a Configuration Rule.
 
-With Tailscale Funnel, a Funnel hostname resolves to a `100.x` address inside
-your own tailnet, which the egress proxy refuses. Always test Funnel URLs from
-outside your tailnet.
+## 4. Check it
 
-For an SSH reverse tunnel, run Caddy on the VM with `GATE_ADDRESS` set to the
-VM's DNS name, and keep the tunnel open from your GPU machine using systemd or a
-loop:
-```bash
-ssh -NT -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes -R 8000:127.0.0.1:8000 <vm>
-```
-
-We tested the gate in front of vLLM and Ollama published through a Cloudflare
-quick tunnel (`kit check` passed against both, and `eval/run.py` ran dev tasks
-against vLLM).
-
-## 4. Check it the way the evaluation server will
-
-From a machine outside your network (such as a cloud VM or Cloud Shell, since
-your LAN or tailnet may resolve the hostname differently):
+From the machine that runs `kit check`, with the gate on `localhost:8090` (use
+its address from section 3 if it runs elsewhere):
 
 ```bash
 # Should print 401 (gate requires the key)
-curl -4 -s -o /dev/null -w '%{http_code}\n' https://llm.example.org/v1/models
+curl -4 -s -o /dev/null -w '%{http_code}\n' http://localhost:8090/v1/models
 
 # Should print the start of a "bash" tool call
-curl -4 -sN https://llm.example.org/v1/chat/completions -H "Authorization: Bearer $MODEL_API_KEY" \
+curl -4 -sN http://localhost:8090/v1/chat/completions -H "Authorization: Bearer $MODEL_API_KEY" \
   -H 'Content-Type: application/json' -d '{"model": "gpt-oss-120b", "stream": true,
   "messages": [{"role": "user", "content": "List the files in /app."}],
   "tools": [{"type": "function", "function": {"name": "bash", "parameters": {"type": "object",
@@ -149,27 +135,14 @@ If the second command prints nothing, run it without `grep` to inspect the raw
 response. A plain-text answer usually means tool-call parsing is not enabled on
 the model server.
 
-Next, from the root of this repository, run `kit check` and `eval/run.py`
-without `--model-base-url` so requests go through the egress proxy to your
-public URL:
+Next, from the root of this repository:
 
 ```bash
-uv run python -m kit check ../my-harness
-uv run python eval/run.py ../my-harness
+uv run python -m kit check ../my-harness --env-file local.env --model-base-url http://localhost:8090/v1
+uv run python eval/run.py ../my-harness --env-file local.env --model-base-url http://localhost:8090/v1
 ```
 
-The evaluation server runs about 36 tasks at once. `eval/run.py --trials 12`
-puts a third of that load on your endpoint if your machine has enough CPUs (4 to
-6 per task). Before your public hostname is live,
-`--model-base-url http://localhost:8090/v1` points both commands at your local
-gate, though `kit check` will only print `ready to submit` when run without
-`--model-base-url`.
-
-## Keep it running
-
-Run the model server, gate, and tunnel as services that restart on failure and
-start on boot (systemd units or Docker with `--restart unless-stopped`). Keep
-them running until your submission page shows Scored, or Failed for a reason on
-your side; after a failure on our side, keep the endpoint up until you have
-resubmitted or an organizer has re-run it. Rotate the key when the competition
-ends.
+Unless `JUDGE_BASE_URL` or `MODEL_PROXY_URL` is set, `eval/run.py` also uses
+your server as the judge ([`eval/README.md`](../eval/README.md#before-you-run)).
+`--trials N` sets how many tasks run at once, if your machine has enough CPUs (4
+to 6 per task).

@@ -1,30 +1,31 @@
 # Sample submissions
 
-Every folder here is a complete, working entry. If you're writing a new harness from scratch, start with [`minimal/`](minimal/).
+Every folder here is a complete, working entry. All but `local-model` run on a Google-sponsored model and can be submitted; `local-model` runs on a model you serve, for local runs only. If you're writing a new harness from scratch, start with [`minimal/`](minimal/).
 
 | Folder | Harness | Default `model_api` | What it demonstrates |
 |---|---|---|---|
 | [`minimal/`](minimal/) | Custom (Python) | `google-cloud/gemini-3.8-flash` | Smallest complete harness (under 250 lines of code): a single tool-calling loop |
 | [`plan-verify/`](plan-verify/) | Custom (Python) | `google-cloud/claude-opus-5-5` | `minimal`'s loop split into planner, worker, and verifier roles with per-step time budgets |
 | [`node-protocol/`](node-protocol/) | Custom (JavaScript) | `google-cloud/claude-opus-5-5` | Speaks the WebSocket serve protocol directly without `taskbridge.py` |
-| [`custom-openai/`](custom-openai/) | Custom (Python) | `openai/gpt-6-astra` | Full-featured reference harness: MCP tools, streaming, context compaction, and deadline-aware retries |
-| [`local-model/`](local-model/) | `custom-openai` | `openai-compatible/gpt-oss-120b` | Serves a model from your own GPUs over public HTTPS (see [`docs/local-models.md`](../docs/local-models.md)) |
+| [`custom-openai/`](custom-openai/) | Custom (Python) | `google-cloud/gpt-oss-120b` | Full-featured reference harness: MCP tools, streaming, context compaction, and deadline-aware retries |
+| [`local-model/`](local-model/) | `custom-openai` | `openai-compatible/gpt-oss-120b` | The same harness on a model you serve from your own GPUs, for local runs only (not accepted for submission; see [`docs/local-models.md`](../docs/local-models.md)) |
 | [`hermes-opus/`](hermes-opus/) | [Hermes Agent](https://github.com/NousResearch/hermes-agent) v0.22.2 | `google-cloud/claude-opus-5-5` | Wraps an existing agent whose terminal runs inside the task container via a plugin backend |
 | [`pi-opus/`](pi-opus/) | [Pi](https://github.com/badlogic/pi-mono) 1.1.0 | `google-cloud/claude-opus-5-5` | Wraps an existing coding agent with a TypeScript extension that redirects file and shell tools to the task container |
-| [`agy-gemini/`](agy-gemini/) | [Antigravity CLI](https://antigravity.google/product/antigravity-cli) 1.3.3 | `google-cloud/gemini-3.8-flash` | Wraps a closed-source CLI agent that interacts with the task container through an MCP server |
+| [`agy-gemini/`](agy-gemini/) | [Antigravity CLI](https://antigravity.google/product/antigravity-cli) 1.4.10 | `google-cloud/gemini-3.8-flash` | Wraps a closed-source CLI agent that interacts with the task container through an MCP server |
 
 Each adapter pins the agent release in the table.
 
 ## Using a sample
 
-Copy the sample folder outside this repository into a standalone Git repository and follow the [Quick start](../README.md#quick-start) steps. If the sample includes `.env.example`, copy it to `.env` and fill in your key.
+Copy the sample folder outside this repository into a standalone Git repository and follow the [Quick start](../README.md#quick-start) steps.
 
-- If the sample uses a `google-cloud/<id>` model, set `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` for local testing ([setup guide](../docs/models.md#running-google-cloud-models-on-your-machine)).
+- For local testing with a `google-cloud/<id>` model, set `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` ([setup guide](../docs/models.md#running-google-cloud-models-on-your-machine)).
+- `local-model` runs on a model you serve: its `local.env.example` lists the key to put in your `--env-file`, outside the entry.
 - Samples do not include pre-generated `artifacts/`. Run `eval/run.py` to generate them, then follow [Before you submit](../README.md#before-you-submit).
 
 ## Changing the model
 
-Update `model_api` in `submission.yaml` (adding `model_base_url` only for `openai-compatible` models) and keep `.env` in sync by adding any required API key and removing unused ones ([`docs/models.md`](../docs/models.md)).
+Update `model_api` in `submission.yaml` to another `google-cloud/<id>` model ([`docs/models.md`](../docs/models.md)). For a local run, it can also name a model of your own (`openai/`, `anthropic/`, `gemini/`, or `openai-compatible/` with `model_base_url`), with its key in your environment or `--env-file`; such an entry is not accepted for submission ([your own model](../docs/models.md#your-own-model-local-runs-only)).
 
 - `minimal`, `plan-verify`, `node-protocol`, `custom-openai`, and
   `local-model` use the OpenAI-compatible endpoint provided for every model, so
@@ -32,7 +33,7 @@ Update `model_api` in `submission.yaml` (adding `model_base_url` only for `opena
   windows, lower `MAX_OUTPUT_TOKENS` (default `32000`) under `env:` in
   `submission.yaml`.
 - `hermes-opus` and `pi-opus` also support any model in `docs/models.md` (using the native Anthropic API for Claude models, and `pi-opus` using the native Gemini API for Gemini models).
-- `agy-gemini` only supports Gemini models, and not Gemini 4 Argon.
+- `agy-gemini` only supports Gemini models.
 
 Every sample asks its model for its highest reasoning level: `max` for Claude
 and GLM (in the custom samples also for GPT-6 and DeepSeek-V4), and `high` for
