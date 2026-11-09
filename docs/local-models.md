@@ -1,11 +1,10 @@
 # Running the dev set on a model you serve
 
-For a local run, an entry with `model_api: openai-compatible/<model>` can call a
-model server you run, for example to try a model on your own GPUs on the dev
-set. This is for local runs only: the competition accepts only
-`google-cloud/<id>` models ([`models.md`](models.md#your-own-model-local-runs-only)),
-so `kit check` never reports such an entry ready to submit, and the evaluation
-server never calls your server.
+An entry with `model_api: openai-compatible/<model>` can call a model server you
+run, for example to try a model on your own GPUs on the dev set. This is for
+local runs only: the competition accepts only `google-cloud/<id>` models
+([`models.md`](models.md#your-own-model-local-runs-only)), so `kit check` never
+reports such an entry ready to submit.
 
 A clean setup keeps the model server on `127.0.0.1` and puts a small auth gate
 in front of it that checks your key. [`sample_submissions/local-model/`](../sample_submissions/local-model/)

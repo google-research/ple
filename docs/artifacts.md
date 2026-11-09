@@ -1,11 +1,11 @@
 # Dev-set artifacts
 
-A submission is a single commit of your repository holding two things:
+An entry is a single commit of your repository holding two things:
 
 1. Your harness: `submission.yaml`, `serve.py`, and the files they need ([`kit/README.md`](../kit/README.md)).
 2. `artifacts/`: what your harness produced when you ran it on the public dev set ([`eval/README.md`](../eval/README.md)).
 
-We grade the committed `artifacts/` with the dev tasks' graders to get your dev score ([How we grade them](#how-we-grade-them)). `eval/run.py` writes `artifacts/` into your entry when a run finishes:
+The committed `artifacts/` are graded with the dev tasks' graders to give your dev score ([how they are graded](#how-artifacts-are-graded)). `eval/run.py` writes `artifacts/` into your entry when a run finishes:
 
 ```bash
 uv run python eval/run.py ../my-harness               # runs the dev set and exports ../my-harness/artifacts/
@@ -14,23 +14,21 @@ git -C ../my-harness add -A && git -C ../my-harness commit -m "dev artifacts"
 
 Commit the whole repository after a run (`git add -A`), harness and `artifacts/`
 together. The exported `manifest.json` records a digest of the harness files
-that made the artifacts, and the server compares it with the harness in the
-commit you submit.
+that made the artifacts, checked against the harness in the commit you submit.
 
 ## Check before you submit
 
-Three commands check your artifacts before the server does. Run them from the
-root of this repository:
+Three commands check your artifacts. Run them from the root of this repository:
 
 | Command | What it checks | What it needs |
 |---|---|---|
-| `uv run python -m kit artifacts ../my-harness` | The server rules below (what it refuses, what it warns about, accepted fallbacks) plus working-tree git state | `git` (takes a few seconds) |
+| `uv run python -m kit artifacts ../my-harness` | The rules below (what is refused, what gets a warning, accepted fallbacks) plus working-tree git state | `git` (takes a few seconds) |
 | `uv run python -m kit check ../my-harness` | The same artifact review, plus whether `artifacts/` is committed and whether any file in it looks like an API key; ends with `ready to submit` | Docker (also builds and smoke-tests the harness) |
-| `uv run python eval/run.py --artifacts ../my-harness` | Copies each task's committed files into a fresh task container and grades them just like the server's dev job, without running your harness | Docker + judge settings in [`eval/README.md`](../eval/README.md#before-you-run) |
+| `uv run python eval/run.py --artifacts ../my-harness` | Copies each task's committed files into a fresh task container and grades them as described [below](#how-artifacts-are-graded), without running your harness | Docker + judge settings in [`eval/README.md`](../eval/README.md#before-you-run) |
 
-`kit artifacts` and `eval/run.py --artifacts` read the files on disk, while the
-server reads your commit. Commit once they pass, then run `kit check` to confirm
-everything is committed.
+`kit artifacts` and `eval/run.py --artifacts` read the files on disk, not your
+commit. Commit once they pass, then run `kit check` to confirm everything is
+committed.
 
 ## Layout
 
@@ -87,17 +85,15 @@ run's artifacts (including from an interrupted run) into your entry later:
 uv run python -m kit artifacts <entry> --from <run dir>
 ```
 
-## How we grade them
+## How artifacts are graded
 
-1. We build your harness and run the smoke task, just as `kit check` does.
-2. For each dev task, we start a fresh task container, remove the paths listed
-   in `deleted.txt`, copy your `files/` into place, record your
-   `final_message.md`, and run the task's grader. Your harness does not run in
-   this step. Your dev score is the mean over all 29 dev tasks, and a task
-   without usable artifacts scores `0`.
-3. We run your harness live on a random sample of dev tasks to check that it reproduces your artifacts' scores ([reproduction check](rules.md#dev-score-and-reproduction-check)).
+For each dev task, grading starts a fresh task container, removes the paths
+listed in `deleted.txt`, copies your `files/` into place, records your
+`final_message.md`, and runs the task's grader. Your harness does not run in
+this step. Your dev score is the mean over all 29 dev tasks, and a task without
+usable artifacts scores `0`.
 
-The server's build strips `artifacts/` (and every fallback folder name listed
+The harness build strips `artifacts/` (and every fallback folder name listed
 below) from `/opt/harness`, so do not put harness code in folders with those
 names. A harness that reads its own artifacts at build or run time (from disk,
 git history, or the network) breaks the fair-play rules.
@@ -119,18 +115,17 @@ first, with a note) if a task folder or `artifacts/` would exceed its size cap.
 
 The 1 GiB repository size limit ([`kit/README.md`](../kit/README.md#resource-and-protocol-limits)) includes your `.git` history. Every committed version of `artifacts/` stays in git history, so squash old commits if repeated dev runs make the repository grow. The exporter warns once your branch history passes 512 MiB.
 
-## What the server refuses, and what it only warns about
+## What is refused, and what only gets a warning
 
-The submit page, the server, and `kit artifacts` apply the same rules.
+`kit artifacts` applies these rules.
 
-### Refused at submit time (no submission slot is used)
+### Refused (the commit is not a usable entry)
 
-The server refuses the commit before queuing a run or counting a submission
-when:
+A commit is refused when:
 
 - There is no usable `artifacts/` folder (including the fallback names below).
 - An archive (`artifacts.zip`, `artifacts.tar.gz`, etc.) was committed instead of a folder.
-- Git LFS tracks the artifacts (the server clones without LFS, so commit the files directly).
+- Git LFS tracks the artifacts (an entry is read without LFS, so commit the files directly).
 - `artifacts/` holds more than 512 MiB or 10,000 files.
 - No dev task has usable artifacts (if every task folder is invalid, the commit is refused rather than scored `0`).
 
@@ -152,7 +147,7 @@ scores `0`.
 
 ### Warned about, then graded as it is
 
-The server warns, and still grades the submission, when:
+The review warns, and the artifacts are still graded, when:
 
 - Some dev tasks have no folder in `artifacts/` (they score `0`).
 - A task whose grader reads `final_message.md` has none, or an empty one.
@@ -183,11 +178,11 @@ include:
 
 ## Fallbacks
 
-So that a small packaging mistake does not zero your dev score, the server
+So that a small packaging mistake does not zero your dev score, the review
 accepts these layouts with a warning (`eval/run.py` always writes the standard
 layout):
 
-| If you committed | We read it as |
+| If you committed | It is read as |
 |---|---|
 | `Artifacts/`, `artifact/`, `dev_artifacts/`, `dev-artifacts/` | `artifacts/` |
 | `runs/<run>/artifacts/` (when exactly one such folder exists) | `artifacts/` |
@@ -206,7 +201,7 @@ without a warning.
 ## `manifest.json`
 
 `eval/run.py` and `kit artifacts --from` write and update
-`artifacts/manifest.json`. Keep it as written so the server can verify which
+`artifacts/manifest.json`. Keep it as written so the review can verify which
 run produced each file:
 
 ```json
@@ -239,10 +234,10 @@ run produced each file:
 ```
 
 - `harness.tree` is a SHA-256 digest of your harness files as git records them
-  (mode, blob ID, and path), excluding `.env` and artifact folders. When your
-  submitted commit has the same digest, the server knows the submitted harness
-  produced the export.
+  (mode, blob ID, and path), excluding `.env` and artifact folders. A matching
+  digest in your submitted commit confirms that the submitted harness produced
+  the export.
 - `harness.files` maps each harness file to its mode and blob ID so the review can name any files modified after the run (`null` past 5,000 harness files or when the manifest would exceed 4 MiB).
 - `tasks.<id>.files` and `final_message` hold the git blob IDs (`git hash-object`) of each exported file and final message, checked against the committed files.
-- `tasks.<id>.reward` is your local grader's score, shown beside the server's dev score for reference and never used for ranking.
+- `tasks.<id>.reward` is your local grader's score, kept for reference and never used for ranking.
 - `tasks.<id>.skipped` lists any files omitted by the exporter (such as a file over 95 MiB) and why: up to 50 rows, plus summary counts per reason.

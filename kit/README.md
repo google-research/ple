@@ -1,12 +1,11 @@
 # The submission kit
 
-`python -m kit check` runs your entry through the evaluation server's pipeline on your own machine: it builds your bundle in the server's builder image, starts your WebSocket server behind the egress proxy, tests model connectivity, runs a smoke task and an MCP task, and reviews your `artifacts/`. An entry on a `google-cloud/<id>` model that passes `kit check` will build, start, and reach its model on the evaluation server too; the [last section](#what-kit-check-does-not-cover) lists what only the server checks.
+`python -m kit check` runs your entry through the evaluation steps on your own machine: it builds your bundle in the builder image, starts your WebSocket server behind the egress proxy, tests model connectivity, runs a smoke task and an MCP task, and reviews your `artifacts/`. The [last section](#what-kit-check-does-not-cover) lists what `kit check` does not cover.
 
 ## What you submit
 
-A submission is a single commit of a GitHub repository owned by your personal
-account (organization repositories are refused): a public repository, or a
-private one with the competition's GitHub App installed.
+An entry is a single commit of a GitHub repository. How to submit it will be
+announced on the [competition site](https://ple-bench.com).
 
 At the root of your repository:
 
@@ -55,7 +54,7 @@ env:                                      # optional: non-secret settings, as qu
 
 ### Build
 
-The server clones your repository at the submitted commit, including `.git` (so `setuptools-scm` and `hatch-vcs` can read a version) and submodules, into a clean `debian:bookworm` container built from [`builder/Dockerfile`](builder/Dockerfile). The image includes `uv` (`/opt/harness/bin/uv`), Node 22 (`/opt/harness/node`), `git`, `curl`, compilers, and `python3`.
+The build clones your repository at the submitted commit, including `.git` (so `setuptools-scm` and `hatch-vcs` can read a version) and submodules, into a clean `debian:bookworm` container built from [`builder/Dockerfile`](builder/Dockerfile). The image includes `uv` (`/opt/harness/bin/uv`), Node 22 (`/opt/harness/node`), `git`, `curl`, compilers, and `python3`.
 
 - `install` runs as root with internet access for up to 30 minutes, and no single file it writes may exceed 8 GiB. Afterward, `.git` is removed and only `/opt/harness` is packed into the bundle.
 - Install everything under `/opt/harness`. System packages installed via
@@ -81,11 +80,11 @@ to your model's API host over TLS (with matching SNI). Web search and external
 APIs are blocked, and connections idle for 30 minutes are closed. Provider-side
 tools (Gemini Google Search, URL context, and code execution; Claude web search,
 web fetch, and code execution; OpenAI `web_search_options` and hosted tools)
-are also forbidden; for `google-cloud` models, both the evaluation server and
+are also forbidden; for `google-cloud` models, both the model gateway and
 `kit/model_proxy` reject them with HTTP `400`. On Docker 28+, the serve
 container is also blocked from reaching host services on your machine (older
 Docker versions may still allow connections to host services on `0.0.0.0` via
-the bridge gateway, which the evaluation server blocks).
+the bridge gateway, which evaluation runs block).
 
 ### Task
 
@@ -127,7 +126,7 @@ uv run python -m kit check ../my-harness [--cancel-test] [--no-smoke]
 | `smoke` | Runs a small task where your harness writes `/app/hello.txt` and sends `done` |
 | `mcp` | Runs a task whose answer comes from a tool on the task's MCP server (warns if your harness does not use MCP) |
 | `cancel` | With `--cancel-test`: cancels a task after 45 s and checks that your harness still sends `done` |
-| `artifacts` | Validates `artifacts/` under the server's rules and checks that it is committed ([`docs/artifacts.md`](../docs/artifacts.md#check-before-you-submit)) |
+| `artifacts` | Validates `artifacts/` against the rules in [`docs/artifacts.md`](../docs/artifacts.md#check-before-you-submit) and checks that it is committed |
 
 It prints `ready to submit` only when every stage passes, `artifacts/` is valid,
 `model_api` is a `google-cloud/<id>` model, and your entry is at the root of a
@@ -144,7 +143,7 @@ key settings (`MODEL_PROXY_KEY`, or your own model's key in a local run) are
 redacted as `[NAME]` in console output and `check.json`, while the raw log
 files under `~/.cache/plebench/` keep your server's unredacted output.
 
-- `--no-smoke` skips the smoke and MCP tasks for a quicker iteration (`listen` and `--cancel-test` still run). The check then never prints `ready to submit`, since the server runs the smoke task.
+- `--no-smoke` skips the smoke and MCP tasks for faster iteration (`listen` and `--cancel-test` still run). The check then never prints `ready to submit`, which requires passing the smoke task.
 - `--keep` leaves the containers running and prints the `docker rm -f` command to remove them.
 - `--env-file` loads `NAME=value` pairs for the local run, kept outside your entry: `MODEL_PROXY_URL` and `MODEL_PROXY_KEY` for `google-cloud` models, or your own model's key for a local-only entry ([`docs/models.md`](../docs/models.md#your-own-model-local-runs-only)). Variables exported in your shell work too.
 - `--model-base-url http://<host>:<port>/v1` points a local run of an
@@ -163,8 +162,7 @@ uv run python -m kit models                   # list the google-cloud models
 
 ## What kit check does not cover
 
-- Repository ownership: the submit page checks that your personal GitHub account owns the repository, and that the competition's GitHub App can read it if it is private.
-- Model key scoping: on the evaluation server, a `google-cloud` entry's key works only for its declared model ([`docs/models.md`](../docs/models.md#what-your-server-receives)), while your local proxy serves all eight.
-- Submodule `.git` directories: the server checks out each submodule with its `.git` directory (`depth 1`), whereas `kit` stages submodule files without `.git`.
-- Uncached builds: `kit` reuses cached builds when harness files haven't changed, while the server always builds from scratch. Pin your dependencies, or test once with `--rebuild`.
-- Dev-set grading and concurrency: `kit check` only runs the smoke and MCP tasks. Use `eval/run.py` to run the 29 dev tasks ([`eval/README.md`](../eval/README.md)). The server runs your harness on about 36 tasks at once (three runs of the test set together), each in its own container.
+- Model key scoping: in evaluation, a `google-cloud` entry's key works only for its declared model ([`docs/models.md`](../docs/models.md#what-your-server-receives)), while your local proxy serves all eight.
+- Submodule `.git` directories: the evaluation build checks out each submodule with its `.git` directory (`depth 1`), whereas `kit` stages submodule files without `.git`.
+- Uncached builds: `kit` reuses cached builds when harness files haven't changed, while the evaluation build always starts from scratch. Pin your dependencies, or test once with `--rebuild`.
+- Dev-set grading and concurrency: `kit check` only runs the smoke and MCP tasks. Use `eval/run.py` to run the 29 dev tasks ([`eval/README.md`](../eval/README.md)). In evaluation, your harness may run on many tasks at once, each in its own container.

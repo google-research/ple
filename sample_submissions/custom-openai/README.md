@@ -69,11 +69,12 @@ Claude's signed thinking blocks on the recent turns kept in history.
 model_api: google-cloud/gpt-oss-120b
 ```
 
-The evaluator supplies the key for `google-cloud/<id>` models, so the entry
-holds none. To switch models, set `model_api` to another `google-cloud/<id>`
-model. For a local run on your own OpenAI key, set `model_api: openai/<model>`
-and put `OPENAI_API_KEY` in your environment or `--env-file`; such an entry is
-not accepted for submission ([`docs/models.md`](../../docs/models.md#your-own-model-local-runs-only)).
+A `google-cloud/<id>` entry contains no API key; the harness reads the key from
+environment variables. To switch models, set `model_api` to another
+`google-cloud/<id>` model. For a local run on your own OpenAI key, set
+`model_api: openai/<model>` and put `OPENAI_API_KEY` in your environment or
+`--env-file`; such an entry is not accepted for submission
+([`docs/models.md`](../../docs/models.md#your-own-model-local-runs-only)).
 
 Optional settings under `env:` in `submission.yaml`:
 

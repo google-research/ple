@@ -23,8 +23,8 @@ and incoming WebSocket frames are capped at 16 MiB (`maxPayload`).
 Model calls stream SSE responses and preserve provider-specific reasoning
 fields (`reasoning_content`, Gemini thought signatures, and Claude signed
 `thinking_blocks`). Because Node's built-in `fetch` drops streams that stay
-silent for 5 minutes—shorter than a max-effort reasoning pause—`serve.mjs` uses
-`fetch` from the pinned `undici` package configured with a 30-minute body/header
+silent for 5 minutes (shorter than a max-effort reasoning pause), `serve.mjs`
+uses `fetch` from the pinned `undici` package with a 30-minute body/header
 timeout (`MODEL_IDLE_SEC`, matching the egress proxy) and routes traffic
 through `HTTPS_PROXY` / `HTTP_PROXY`. On `cancel` or socket close, the server
 aborts any in-flight `fetch` call, rejects pending tool requests, and

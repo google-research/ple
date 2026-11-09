@@ -19,7 +19,7 @@
 # (directories end with `/`), exported as described in `docs/artifacts.md`. `final_message`: whether the grader
 # also reads the final message.
 tasks_repo: google/physical-engineerings-last-exam
-tasks_revision: 78463e08561818742f92ab4f6828cb0e95fbc0a9
+tasks_revision: b3857a3fea39a695e18f845d4a88f29442e96e75
 tasks:
 - id: data-hall-mep-routing
   title: Clash-free MEP routing through a data hall
@@ -28,7 +28,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/app/files/dc_model__hall_seed000_d000__mep_routing/output/solution.py]
   final_message: false
-  sha256: c6d4060270c3b9737f986187ee8b0f776b5d54bd2e745d0d56e6affb1cba7a94
+  sha256: 4f11a0a62f11c2b0ea6347d7281a6297eed83087d1ae83d5cc42a9dd79f1c940
 - id: fire-test-validation-memo
   title: Validation memo for a fire-resistance simulation against its test
   domain: Mechanical engineering
@@ -44,7 +44,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/app/files/dc_model__hall_seed005_d100__mep_routing/output/solution.py]
   final_message: false
-  sha256: 7d5296d151b9a94341032954b553dc6ad8a333aff831025075eb1e7720246214
+  sha256: 9c208ede28b2d889b0242f7a594cd8f6c1f444a86e811695f01326a0ab49ede6
 - id: eor-review-corrections
   title: Issue an engineer-of-record review's corrections to two bid packages
   domain: Structural engineering
@@ -84,7 +84,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: feb603e4747ff0a5a8416f8d1653f0dd5199405201870726d9ab548ad26f136b
+  sha256: 35852ade3d40329a0f14b7a8a91acb7ff04db4a912305570c2a59352dd427866
 - id: footing-settlement-verification
   title: Settlement verification of a building block's spread footings on clay
   domain: Civil engineering
@@ -92,7 +92,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 67bf7f62a138a0b27b27f2918684a7b1f359b4ea772f071c4830d806cd8fab28
+  sha256: 96124d80a625994dd5f971ed422752c6b06622806cf252faec31202a2ceb1d79
 - id: solar-supplemental-review
   title: Supplemental interconnection review memo for a solar project
   domain: Electrical engineering
@@ -100,7 +100,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: ea3b46bb7491316e9b690eceaaaa83c8bbe7ebe98adfd7107feaef947d6179bd
+  sha256: 4bdca16af73ac60f1b5ad92b0bee8b2391b9781c72ddca5807bafb75e90c29fb
 - id: solar-witness-test-package
   title: Witness-test scope and schedule for municipal solar arrays
   domain: Electrical engineering
@@ -108,7 +108,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 0d51ea64035db99dd2f9589fc08107800705ad44f6da688aa2b3f08c7c114ede
+  sha256: e747710ee729f2c97c54b6b0a1c550c6b51100ab58b6f142ee062c2538edbed0
 - id: frame-extension-method
   title: Method package for a frame extension over an occupied floor
   domain: Civil engineering
@@ -124,7 +124,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 9f30507503445343fdeb334458f92f70d24ea7c940791ce60093a9fd2cc273b0
+  sha256: 32c0619972e1e53f3e300f83b8e5dfa014da4e65f6f8e2b61c319938695e8159
 - id: les-mesh-resolution
   title: Mesh-resolution basis for an LES fire case
   domain: Mechanical engineering
@@ -132,7 +132,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 1f991f0ef349d0fb449cc1a9800d6f3f6e35504a61587c5128fc1a3a39b893a5
+  sha256: 0471fe49441496ed307eb98df8a9b9b61ec6d673b35fe15ba1b3f1dfeb1cf875
 - id: mv-conveyance-study
   title: Conveyance study for a 13.8 kV site distribution
   domain: Electrical engineering
@@ -164,7 +164,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/final_batch4__mechanical_task3_ct_heat_lcc__blind/output/submission.zip]
   final_message: false
-  sha256: bdb25c415b36af434b640de41156d5b9d17bffd914a55633fefd74df9cf89f76
+  sha256: a370ce56d0a314e01a6e30bf43284bfd90ae09febb21915cf4b35988f0f344b5
 - id: cooling-water-flush-plan
   title: Flushing and passivation of a data hall's process cooling water
   domain: Mechanical engineering
@@ -204,7 +204,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 306eee1b6979db951ec3c14d12ef83a6ccc5bf58e260e85da7272e276282956f
+  sha256: 5dcaf60aa58986d91b4b13f2109f7f0aa888c76bb996c7bf934d9c7fa000de84
 - id: shoring-design-verification
   title: Verification of a revised shoring design ahead of an excavation
   domain: Civil engineering
@@ -212,7 +212,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 406d90ec39b78e0124334a91dfea2250c17dec47c24f4c408ea158ef956166f6
+  sha256: 0748e5de15dccd8c77d4f2cf94f69aebcfb60edad93c0e2ab03eb10c9eeced32
 - id: emergency-spillway-check
   title: Emergency spillway check behind a plan-check comment
   domain: Civil engineering
@@ -220,7 +220,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: d770c6d71fd73e12dafafa39f0fc494389b0b53dcb3672bb27de8b0f13abb807
+  sha256: b20319afb3eae5714afa4c9f7251e9539ee6b81cba12b713e144ae0788972500
 - id: pre-application-capacity-response
   title: Response to a pre-application request for feeder capacity
   domain: Electrical engineering
@@ -228,7 +228,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: ac59fed57d04859e05d8ae13d28baa3135aff4cd6f0040182d9f3fe6783d5ebf
+  sha256: e210708581cb87d0f92c6bf90816774e067edd9b0302a7f452efa627af2e581d
 - id: permission-to-operate-memo
   title: Permission-to-operate memo for an office complex's PV system
   domain: Electrical engineering
@@ -236,7 +236,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 67bb3010a82763990287ad77d4e48c6675d09fb7388c2e89245503e452556eea
+  sha256: bc98ef15469c7082793eb0b8adfc319d020b7bafbc6e8b571e7932a631fcb4cd
 - id: backfeed-energization-reply
   title: Reply on a community solar site's backfeed energization date
   domain: Electrical engineering
@@ -244,7 +244,7 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/, /app/output/, /app/tools/.apps_data/]
   final_message: true
-  sha256: 6e73cc13e5b2facc7e783c809eea40cdca8deb3f5197314544aa45d88e7a6615
+  sha256: 6c0f4273546bcf0fa6e311f7667e133b582f87520918e08a586e1e94c041a656
 - id: lv-cable-sizing
   title: Low-voltage wire schedule with voltage drop and duct-bank ampacity
   domain: Electrical engineering
@@ -252,4 +252,4 @@ tasks:
   time_limit_min: 360
   deliverables: [/filesystem/electrical__lv_cable_sizing__blind/output/submission.zip, /filesystem/filesystem/electrical__lv_cable_sizing__blind/output/submission.zip]
   final_message: false
-  sha256: 27b2486695fd8370c4925ee5ad25b1c34e0abb7bd4ba463ad1c0a10115f3a5f7
+  sha256: a0d86bb4f1d6b635bdbc93fdb0747289b473ea9795e59999303f844886aacc5e

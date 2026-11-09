@@ -13,12 +13,7 @@ mechanical engineering. Each task runs in an isolated container and asks for a
 project deliverable—a calculation package, design review, drawing, or technical
 memo—graded from `0` to `1` by automated checks, an LLM rubric judge, or both.
 
-In the [PLE competition](https://ple-bench.com), you submit a GitHub commit containing your **harness** (the server that drives a model through each task), the Google-sponsored **model** it calls, and the **`artifacts/`** it produced on the **29 public dev tasks** ([dataset](https://huggingface.co/datasets/google/physical-engineerings-last-exam)). For each submission, we:
-
-1. **Grade your committed `artifacts/`** to compute your dev score.
-2. **Run your harness live** on a sample of dev tasks to verify that your dev
-   score reproduces.
-3. **Run your harness three times on the 56 hidden test tasks**; the mean of the three runs is your test score, and the leaderboard ranks participants by their best test score ([rules and scoring](docs/rules.md)).
+In the [PLE competition](https://ple-bench.com), an entry is a GitHub commit containing your **harness** (the server that drives a model through each task), the Google-sponsored **model** it calls, and the **`artifacts/`** it produced on the **29 public dev tasks** ([dataset](https://huggingface.co/datasets/google/physical-engineerings-last-exam)). How to submit entries, and how they will be evaluated and ranked on the **56 hidden test tasks**, will be announced on the [competition site](https://ple-bench.com), which also hosts the benchmark leaderboard ([rules and scoring](docs/rules.md)).
 
 ## Quick start
 
@@ -62,7 +57,7 @@ list of dev tasks.
    ```bash
    uv run python -m kit check ../my-harness
    ```
-3. **Push and submit:** Push the commit to a GitHub repository owned by your personal account (public, or private with the competition's GitHub App installed), [register](https://ple-bench.com/competition/register), and submit on the [competition site](https://ple-bench.com).
+3. **Push the commit to a GitHub repository.** Submission details will be announced on the [competition site](https://ple-bench.com).
 
 ## How an entry runs
 
@@ -80,9 +75,9 @@ For each task (up to 6 hours), the evaluator sends the task prompt over the WebS
 ## Models
 
 Set `model_api` in `submission.yaml` to any of the eight Google-sponsored
-`google-cloud/<id>` models (free on the evaluation server, which supplies the
-key, so the competition takes no API keys; run locally via
-[`kit/model_proxy`](docs/models.md#running-google-cloud-models-on-your-machine)).
+`google-cloud/<id>` models. Your harness reads the model's URL and key from
+environment variables, so an entry contains no API keys. To run these models
+locally, use [`kit/model_proxy`](docs/models.md#running-google-cloud-models-on-your-machine).
 For local runs only, the kit and `eval/run.py` can also run your harness on a
 commercial model with your own key or on a
 [model you serve](docs/local-models.md), with the key in your environment or

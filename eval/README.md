@@ -1,6 +1,6 @@
 # Dev set evaluation
 
-`eval/run.py` runs your entry on the 29 public dev tasks, grades the results with the leaderboard's graders, and writes your harness's outputs into your entry's `artifacts/` folder, which you commit and submit ([`docs/artifacts.md`](../docs/artifacts.md)). `eval/run.py --artifacts` grades that folder offline just as the server does ([below](#check-your-artifacts-before-you-submit)).
+`eval/run.py` runs your entry on the 29 public dev tasks, grades the results with the benchmark's graders, and writes the outputs into your entry's `artifacts/` folder to commit alongside your harness ([`docs/artifacts.md`](../docs/artifacts.md)). `eval/run.py --artifacts` grades that folder offline ([below](#check-your-artifacts-before-you-submit)).
 
 The tasks live in the Hugging Face dataset named in
 [`dev_set.yaml`](dev_set.yaml) (`tasks_repo`). Each run uses the dataset's
@@ -24,17 +24,17 @@ What you need:
   3. Your entry's own model and its key (a local-only entry that does not use `google-cloud/<id>`)
 
   `JUDGE_MODEL` defaults to `claude-opus-5-5` (or to your entry's model when
-  option 3 is used). The leaderboard always grades with Claude Opus 5.5, which
+  option 3 is used). The benchmark leaderboard grades with Claude Opus 5.5, which
   other judge models only approximate. When calling `MODEL_PROXY_URL` (or a
   `JUDGE_BASE_URL` pointing to the same server), `eval/run.py` requests
   `<model>-judge` so `kit/model_proxy` uses the model's standard default
-  reasoning effort—matching the evaluation server's judge—rather than the
-  maximum effort used for harnesses. (If you point `JUDGE_BASE_URL` at
+  reasoning effort (matching the leaderboard's judge) rather than the maximum
+  effort used for harnesses. (If you point `JUDGE_BASE_URL` at
   `kit/model_proxy` without setting `MODEL_PROXY_URL`, set
   `JUDGE_MODEL=claude-opus-5-5-judge` explicitly.) If Claude Opus 5.5 refuses a
-  judge request, `kit/model_proxy` sends that request once to Claude Opus 5 and
-  returns its reply, as the evaluation server's judge does. Harness requests are
-  never re-sent.
+  judge request, `kit/model_proxy` sends it once to Claude Opus 5 and returns
+  that reply, as the leaderboard's judge does. Harness requests are never
+  re-sent.
 - Any local judge on `localhost` must be reachable from inside Docker
   containers. On Linux, verifier containers connect via Docker's bridge IP, so a
   server bound only to `127.0.0.1` will not be reachable (`kit/model_proxy/start.sh`
@@ -82,7 +82,7 @@ uv run python eval/run.py ../my-harness --env-file local.env
 uv run python eval/run.py ../my-harness --env-file local.env --tasks data-center-site-model,engineers-estimate-check
 ```
 
-The kit builds the entry the same way the server does, reusing the last build
+The kit builds the entry the same way `kit check` does, reusing the last build
 when nothing changed (`--rebuild` forces a rebuild). Common flags:
 
 - `--trials N`: How many tasks to run in parallel
@@ -128,13 +128,12 @@ explicitly. Because a `--url` run does not record a harness digest in
   applications (email, documents, spreadsheets, CAD) over MCP. Their Docker
   images are large (about 17 GB) and take a while to build, so `eval/run.py`
   pre-builds them once before starting the run. Each image gets at least an
-  hour to build locally (overriding any shorter `task.toml` timeout meant for
-  the evaluation server's warm cache). If an image build times out, that task is
+  hour to build locally (overriding any shorter `task.toml` timeout, which
+  assumes a warm image cache). If an image build times out, that task is
   marked unmeasured while the remaining tasks still run, and concurrent
   `eval/run.py` processes share a single image build.
-- Harnesses stop at the time limit, 6 hours for every task, as on the evaluation
-  server (174 hours total if run one at a time, plus setup and grading; most
-  harnesses finish far sooner).
+- Harnesses stop at the 6-hour per-task time limit (174 hours total if run one
+  at a time, plus setup and grading; most harnesses finish far sooner).
 - The judge answers one call per rubric task (or one per rendered document
   group when a rubric inspects rendered pages) and a few targeted calls per
   `checks-judge` task, plus retries of calls that fail.
@@ -166,7 +165,7 @@ runs/<name>-<time>/              (runs/<name>-artifacts-<time>/ for --artifacts)
 
 ## Check your artifacts before you submit
 
-Before submitting, run the checks in [`docs/artifacts.md`](../docs/artifacts.md#check-before-you-submit). One of them is `eval/run.py --artifacts ../my-harness`, which copies each task's committed files into a fresh task container and grades them just like the server does. Each row prints `your run scored X` alongside the new score when `manifest.json` recorded a previous score (LLM-judged scores typically vary by a few points between calls).
+Before submitting, run the checks in [`docs/artifacts.md`](../docs/artifacts.md#check-before-you-submit). One of them is `eval/run.py --artifacts ../my-harness`, which copies each task's committed files into a fresh task container and grades them with the task's grader. Each row prints `your run scored X` alongside the new score when `manifest.json` recorded a previous score (LLM-judged scores typically vary by a few points between calls).
 
 ## How grading works
 
@@ -189,7 +188,7 @@ in the run directory.
 | Trial outcome | What `eval/run.py` does |
 |---|---|
 | Your harness ended (`done`, `error`, `AgentTimeoutError`, or `NonZeroAgentExitCodeError`) | Measured: whatever deliverables are in the container are graded. |
-| Your harness exited with an error before its model produced any output (zero output tokens reported, or, when none are reported, no tool or model activity in its trajectory) | Not started: run again, up to `--attempts` runs in all, or marked unmeasured (counting `0`) if it never starts. Exception: a harness that ended on a context-length overflow or a provider's limit (such as a tool-count limit) is graded as-is, matching the evaluation server. |
+| Your harness exited with an error before its model produced any output (zero output tokens reported, or, when none are reported, no tool or model activity in its trajectory) | Not started: run again, up to `--attempts` runs in all, or marked unmeasured (counting `0`) if it never starts. Exception: a harness that ended on a context-length overflow or a provider's limit (such as a tool-count limit) is graded as it is. |
 | A `rubric` or `checks-judge` grader failed (`GRADER_FAILED.txt` or `VerifierTimeoutError`) | Re-graded from the snapshotted deliverables in a fresh container up to 3 times without re-running your harness; marked unmeasured if all 3 fail. |
 | Any other evaluator fault (`checks` grader failure, missing reward, Harbor/Docker/network error, or a harness cut off by an endpoint/network error, even when its grader also failed) | Not measured: the full task trial runs again, up to `--attempts` runs in all. |
 | Broken `task.toml`, or a task image that did not build | Not measured and not re-run. |
@@ -242,6 +241,6 @@ changed.
 | `lv-cable-sizing` | Electrical engineering | `checks-judge` | Size a building's low-voltage cable schedule for voltage drop, duct-bank ampacity, and cost, with a constraint register and design basis |
 
 [`dev_set.yaml`](dev_set.yaml) lists each task's time limit (`time_limit_min`,
-360 minutes for every task, matching `task.toml`, `eval/run.py`, and the
-evaluation server), and deliverable paths. The task
-definitions and graders live in the Hugging Face dataset under `tasks/<id>/`.
+360 minutes for every task, matching `task.toml` and `eval/run.py`) and
+deliverable paths. The task definitions and graders live in the Hugging Face
+dataset under `tasks/<id>/`.

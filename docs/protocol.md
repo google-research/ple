@@ -172,7 +172,7 @@ re-run.
 
 Faults on the evaluator's side do not count against your harness: a Docker daemon error, a vanished task container, the egress proxy stopping (unless your own traffic exhausted its memory), or a host/network fault. The evaluator aborts the trial and re-runs the task ([Scoring](rules.md#scoring)).
 
-When a trial ends (normally, by timeout, or by cancellation), the evaluator stops all processes started inside the task container during the trial—regardless of user or environment—before collecting deliverables for grading, ensuring files cannot change while being graded. During a local dev-set run (`eval/run.py`), deliverables are also exported to your [artifacts](artifacts.md) as soon as the session ends. Before copying, the exporter stops processes launched by your commands using an environment marker; however, any background process started with a cleared environment (`env -i`) will not carry that marker and could continue modifying files during the copy. Always stop such processes yourself before sending `done`.
+When a trial ends (normally, by timeout, or by cancellation), the evaluator stops every process started in the task container during the trial (regardless of user or environment) before collecting deliverables, so files cannot change during grading. During a local dev-set run (`eval/run.py`), deliverables are also exported to your [artifacts](artifacts.md) as soon as the session ends. Before copying, the exporter stops processes launched by your commands using an environment marker; however, any background process started with a cleared environment (`env -i`) will not carry that marker and could continue modifying files during the copy. Always stop such processes yourself before sending `done`.
 
 ## 6. Minimal server example
 

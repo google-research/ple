@@ -44,12 +44,12 @@ To change the model, set `model_api` in `submission.yaml` to any model in
 Pi's native `anthropic` provider, and Gemini models (`google-cloud/gemini-*`, or
 `gemini/*` in a local run) use Pi's native `google` provider, inheriting context
 limits, thinking support, and vision support from Pi's built-in catalog. Any
-model not in Pi 1.1.0's catalog—including OpenAI-compatible models and
-`google-cloud/gemini-4-argon`—falls back to `UNKNOWN_MODEL` in `harness.py`
-(128k context, 16k max output tokens, text-only; update those limits to match
-your model, such as 1,048,576 context and 65,536 max output tokens for Gemini 4
-Argon, and leave `reasoning` unset for Argon because Pi's `reasoning: true`
-sends a token budget that Argon rejects with `400`).
+model not in Pi 1.1.0's catalog, including OpenAI-compatible models and
+`google-cloud/gemini-4-argon`, falls back to `UNKNOWN_MODEL` in `harness.py`
+(128k context, 16k max output tokens, text-only). Update those limits to match
+your model (for Gemini 4 Argon: 1,048,576 context and 65,536 max output
+tokens). For Argon, also leave `reasoning` unset: Pi's `reasoning: true` sends a
+token budget that Argon rejects with `400`.
 
 ## Notes
 
@@ -60,4 +60,4 @@ sends a token budget that Argon rejects with `400`).
 - `harness.py` appends the task's remaining minutes to Pi's system prompt, stops Pi 90 seconds before the task deadline, and sends Pi's latest response as `final_message`.
 - Pi is configured (`SETTINGS` in `harness.py`) to retry failed model requests up to 8 times over ~4 minutes, allow up to an hour for silent reasoning streams, and keep Claude's prompt cache warm during long commands.
 - Task MCP servers are passed to Pi via `mcp.json`.
-- `npm ci` installs exact versions from `package-lock.json`, ensuring reproducible builds on the evaluation server.
+- `npm ci` installs exact versions from `package-lock.json`, so every build gets the same packages.

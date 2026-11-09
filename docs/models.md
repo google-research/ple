@@ -1,19 +1,17 @@
 # Models
 
 The `model_api` field in `submission.yaml` declares which model your harness
-calls. Submissions use one of the Google-sponsored `google-cloud/<id>` models,
-whose key the evaluation server supplies, so the competition takes no API keys.
-Whatever the model, your server receives the same `MODEL_*` and `OPENAI_*`
-environment variables, so a harness that reads them can switch models without
-code changes. The leaderboard shows the model beside each entry.
+calls. Entries use one of the Google-sponsored `google-cloud/<id>` models and
+contain no API keys: your server reads the model's URL and key from the
+`MODEL_*` and `OPENAI_*` environment variables. Because every model uses the
+same variable names, your harness can switch models without code changes.
 
 For local runs only, `model_api` can also name a model of your own
 ([below](#your-own-model-local-runs-only)).
 
 ## Google-sponsored models (`google-cloud/<id>`)
 
-These eight models are hosted for the competition, need no API key, and are
-free on our servers:
+Entries can use these eight models:
 
 | `model_api` | Model | Supported APIs |
 |---|---|---|
@@ -60,14 +58,13 @@ cover.
 |---|---|
 | `MODEL_API` | `model_api` as written |
 | `MODEL_NAME` | `<id>` |
-| `MODEL_BASE_URL`, `MODEL_API_KEY` | Gateway URL (`.../v1`) and the per-submission key |
+| `MODEL_BASE_URL`, `MODEL_API_KEY` | Gateway URL (`.../v1`) and the entry's key |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | Gateway URL without `/v1` and the same key (Claude models only) |
 | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` | Gateway URL without `/v1` and the same key (Gemini models only) |
 
-On the evaluation server, a `google-cloud` entry's key is generated for that
-submission and works only for the declared model; requests for any other model
-get `403`. Locally, the kit passes your proxy's URL and `MODEL_PROXY_KEY`
-instead.
+Call only the model you declared. In evaluation, the key works for that model
+alone, and requests for any other model get `403`. Locally, the kit passes your
+proxy's URL and `MODEL_PROXY_KEY`, and the proxy serves all eight models.
 
 `OPENAI_BASE_URL` and `OPENAI_API_KEY` always match `MODEL_BASE_URL` and
 `MODEL_API_KEY`, so the OpenAI SDK needs no arguments:
@@ -156,15 +153,15 @@ is a complete entry configured this way.
   reason, and discard any partial response so the model never sees an incomplete
   turn in its conversation history.
 - When you call a Google-sponsored model without specifying a reasoning level,
-  the evaluation server and `kit/model_proxy` default to the model's highest
+  the model gateway and `kit/model_proxy` default to the model's highest
   setting: `max` for Claude and GLM, and `high` for Gemini and gpt-oss. Pass
   `reasoning_effort` (or `thinking`) explicitly to use a lower
   level. LLM judge calls are the one exception: they run at the model's standard
-  default (via `<model>-judge` on `kit/model_proxy`). A judge request that
-  Claude Opus 5.5 refuses is sent once to Claude Opus 5, by the evaluation
-  server and by `kit/model_proxy`; harness requests are never re-sent.
-- Gemini 4 Argon takes a thinking level—`low`, `medium`, or `high` (via
-  `reasoning_effort`, or `thinkingConfig.thinkingLevel` in the Gemini API)—and
+  default (via `<model>-judge` on `kit/model_proxy`). If Claude Opus 5.5 refuses
+  a judge request, the model gateway and `kit/model_proxy` send it once to
+  Claude Opus 5; harness requests are never re-sent.
+- Gemini 4 Argon takes a thinking level of `low`, `medium`, or `high` (via
+  `reasoning_effort`, or `thinkingConfig.thinkingLevel` in the Gemini API) and
   returns `400` if you pass a token budget (`thinkingBudget`, even `0`). Use
   `high` for maximum reasoning (the Gemini API also accepts `MAX`, but Argon
   reasons less at `MAX` than at `high`). In OpenAI Chat Completions, a
@@ -178,7 +175,7 @@ is a complete entry configured this way.
   generously (`32000` is a good default).
 - Track the remaining time in `limits.agent_timeout_sec` and finish your model calls before it runs out.
 - Provider-hosted tools are not allowed ([Fair play](rules.md#fair-play)). For
-  `google-cloud` models, both the evaluation server and `kit/model_proxy` reject
+  `google-cloud` models, both the model gateway and `kit/model_proxy` reject
   requests that enable them with HTTP `400`: Gemini Google Search, URL context,
   and code execution; Claude web search, web fetch, and code execution; and
   OpenAI `web_search_options` or hosted tools (web search, file search, code
