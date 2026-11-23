@@ -11,11 +11,14 @@ For local runs only, `model_api` can also name a model of your own
 
 ## Google-sponsored models (`google-cloud/<id>`)
 
-Entries can use these eight models:
+Entries can use these eleven models:
 
 | `model_api` | Model | Supported APIs |
 |---|---|---|
 | `google-cloud/gemini-4-argon` | Gemini 4 Argon | OpenAI Chat Completions, Gemini API |
+| `google-cloud/gemini-4-carbon` | Gemini 4 Carbon | OpenAI Chat Completions, Gemini API |
+| `google-cloud/gemini-4-neon` | Gemini 4 Neon | OpenAI Chat Completions, Gemini API |
+| `google-cloud/gemini-4-hydrogen` | Gemini 4 Hydrogen | OpenAI Chat Completions, Gemini API |
 | `google-cloud/gemini-3.8-flash` | Gemini 3.8 Flash | OpenAI Chat Completions, Gemini API |
 | `google-cloud/gemini-3.1-pro-preview` | Gemini 3.1 Pro (preview) | OpenAI Chat Completions, Gemini API |
 | `google-cloud/claude-opus-5-5` | Claude Opus 5.5 | OpenAI Chat Completions, Anthropic Messages |
@@ -24,7 +27,7 @@ Entries can use these eight models:
 | `google-cloud/gemma-4-26b` | Gemma 4 26B A4B | OpenAI Chat Completions |
 | `google-cloud/llama-4-maverick` | Llama 4 Maverick 17B 128E | OpenAI Chat Completions |
 
-All eight support tool calling, with or without streaming. Run
+All eleven support tool calling, with or without streaming. Run
 `uv run python -m kit models` to print this list.
 
 ### Running google-cloud models on your machine
@@ -64,7 +67,7 @@ cover.
 
 Call only the model you declared. In evaluation, the key works for that model
 alone, and requests for any other model get `403`. Locally, the kit passes your
-proxy's URL and `MODEL_PROXY_KEY`, and the proxy serves all eight models.
+proxy's URL and `MODEL_PROXY_KEY`, and the proxy serves all eleven models.
 
 `OPENAI_BASE_URL` and `OPENAI_API_KEY` always match `MODEL_BASE_URL` and
 `MODEL_API_KEY`, so the OpenAI SDK needs no arguments:

@@ -162,7 +162,7 @@ uv run python -m kit models                   # list the google-cloud models
 
 ## What kit check does not cover
 
-- Model key scoping: in evaluation, a `google-cloud` entry's key works only for its declared model ([`docs/models.md`](../docs/models.md#what-your-server-receives)), while your local proxy serves all eight.
+- Model key scoping: in evaluation, a `google-cloud` entry's key works only for its declared model ([`docs/models.md`](../docs/models.md#what-your-server-receives)), while your local proxy serves all eleven.
 - Submodule `.git` directories: the evaluation build checks out each submodule with its `.git` directory (`depth 1`), whereas `kit` stages submodule files without `.git`.
 - Uncached builds: `kit` reuses cached builds when harness files haven't changed, while the evaluation build always starts from scratch. Pin your dependencies, or test once with `--rebuild`.
 - Dev-set grading and concurrency: `kit check` only runs the smoke and MCP tasks. Use `eval/run.py` to run the 29 dev tasks ([`eval/README.md`](../eval/README.md)). In evaluation, your harness may run on many tasks at once, each in its own container.

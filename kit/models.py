@@ -26,6 +26,9 @@ import urllib.parse
 # each model family.
 GOOGLE_CLOUD = {
     "gemini-4-argon": "Gemini 4 Argon",
+    "gemini-4-carbon": "Gemini 4 Carbon",
+    "gemini-4-neon": "Gemini 4 Neon",
+    "gemini-4-hydrogen": "Gemini 4 Hydrogen",
     "gemini-3.8-flash": "Gemini 3.8 Flash",
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro (preview)",
     "claude-opus-5-5": "Claude Opus 5.5",

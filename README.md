@@ -74,7 +74,7 @@ For each task (up to 6 hours), the evaluator sends the task prompt over the WebS
 
 ## Models
 
-Set `model_api` in `submission.yaml` to any of the eight Google-sponsored
+Set `model_api` in `submission.yaml` to any of the eleven Google-sponsored
 `google-cloud/<id>` models. Your harness reads the model's URL and key from
 environment variables, so an entry contains no API keys. To run these models
 locally, use [`kit/model_proxy`](docs/models.md#running-google-cloud-models-on-your-machine).

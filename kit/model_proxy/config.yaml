@@ -14,6 +14,9 @@
 
 model_list:
   - {model_name: gemini-4-argon, litellm_params: {model: vertex_ai/gemini-4-argon, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
+  - {model_name: gemini-4-carbon, litellm_params: {model: vertex_ai/gemini-4-carbon, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
+  - {model_name: gemini-4-neon, litellm_params: {model: vertex_ai/gemini-4-neon, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
+  - {model_name: gemini-4-hydrogen, litellm_params: {model: vertex_ai/gemini-4-hydrogen, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
   - {model_name: gemini-3.8-flash, litellm_params: {model: vertex_ai/gemini-3.8-flash, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
   - {model_name: gemini-3.1-pro-preview, litellm_params: {model: vertex_ai/gemini-3.1-pro-preview, vertex_project: os.environ/VERTEXAI_PROJECT, vertex_location: global}}
   # Claude passes every request parameter through unchanged, as on the evaluation server's proxy; the other
