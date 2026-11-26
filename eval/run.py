@@ -1209,9 +1209,13 @@ def _built(task: pathlib.Path, env_dir: pathlib.Path, tag: str) -> str:
     ImageNotBuilt: If the image build fails or times out.
   """
   inspected = subprocess.run(
-      ["docker", "image", "inspect", tag], capture_output=True, check=False
+      ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", tag],
+      capture_output=True,
+      text=True,
+      env=stack.docker_env(),
+      check=False,
   )
-  if inspected.returncode == 0:
+  if inspected.returncode == 0 and inspected.stdout.strip() == stack.PLATFORM:
     return tag
   # Allow at least LOCAL_BUILD_SEC for cold local builds that pull base layers.
   limit = max(
@@ -1232,7 +1236,7 @@ def _built(task: pathlib.Path, env_dir: pathlib.Path, tag: str) -> str:
         capture_output=True,
         text=True,
         timeout=limit,
-        env={**os.environ, "DOCKER_BUILDKIT": "1"},
+        env={**stack.build_env(), "DOCKER_BUILDKIT": "1"},
         check=False,
     )
   except subprocess.TimeoutExpired:
@@ -2768,6 +2772,13 @@ def preflight() -> None:
   """Checks Harbor and Docker availability and sweeps leftover resources."""
   check_harbor(harbor())
   build.require_local_daemon()
+  for plugin in ("buildx", "compose"):
+    result = stack.docker(plugin, "version", timeout=30, check=False)
+    if result.returncode != 0:
+      raise stack.InfraError(
+          f"Docker {plugin} plugin is required. Install it and verify "
+          f"'docker {plugin} version' succeeds."
+      )
   check.sweep_leftovers()
 
 
